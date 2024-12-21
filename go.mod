@@ -1,8 +1,6 @@
 module github.com/icreateapp-com/go-zLib
 
-go 1.22
-
-toolchain go1.23.4
+go 1.23.4
 
 require (
 	github.com/fatih/color v1.18.0

@@ -49,3 +49,11 @@
 | StringToNum      | 将字符串转换为数字。            | `str string`：要转换的字符串。                                                      | `uint`：转换后的数字。<br>`error`：可能出现的错误。                    |
 | ToString         | 将任意类型转换为字符串。          | `v interface{}`：要转换的值。                                                     | `string`：转换后的字符串。                                     |
 
+## 发布版本
+```bash
+git add .
+git commit -m "描述"
+git push origin main
+git tag -a v1.0.1 -m  '描述'
+git push origin --tags
+```
