@@ -111,6 +111,13 @@ func (q QueryBuilder) Page(query Query) (PageInfo, error) {
 	// db
 	db := DB.Model(q.Model)
 
+	// set page info
+	if len(query.Page) == 0 {
+		query.Page = []int{1, 10}
+	} else if len(query.Page) == 1 {
+		query.Page = append(query.Page, 10)
+	}
+
 	// parse filter fields
 	db, rows, err := q.ParseFilter(db, query.Filter)
 	if err != nil {

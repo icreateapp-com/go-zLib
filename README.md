@@ -48,3 +48,50 @@
 | StringIsEmpty    | 判断字符串是否为空。            | `str string`：要检查的字符串。                                                      | `bool`：字符串是否为空。                                       |
 | StringToNum      | 将字符串转换为数字。            | `str string`：要转换的字符串。                                                      | `uint`：转换后的数字。<br>`error`：可能出现的错误。                    |
 | ToString         | 将任意类型转换为字符串。          | `v interface{}`：要转换的值。                                                     | `string`：转换后的字符串。                                     |
+
+## 前端查询
+```json
+
+{
+    "filter": [
+        "id",
+        "name"
+    ],
+    "search": [
+        {
+            "operator": "and",
+            "conditions": [
+                [
+                    "id",
+                    "423223bc-044c-4be8-87d1-fa52dcc31183"
+                ],
+                [
+                    "name",
+                    "bobby",
+                    "like"
+                ],
+                [
+                    "created_at",
+                    "2024-12-31 00:00:00",
+                    ">"
+                ]
+            ]
+        }
+    ],
+    "orderby": [
+        [
+            "created_at",
+            "desc"
+        ]
+    ],
+    "limit": [
+        1,
+        10
+    ],
+    "page": [
+        1,
+        30
+    ]
+}
+
+```
