@@ -1,4 +1,4 @@
-package zLib
+package z
 
 import (
 	cron "github.com/robfig/cron/v3"

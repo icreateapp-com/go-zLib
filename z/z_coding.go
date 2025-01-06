@@ -1,4 +1,4 @@
-package zLib
+package z
 
 import (
 	"crypto/md5"
@@ -126,4 +126,10 @@ func IsBase64Image(toTest string) bool {
 	}
 
 	return false
+}
+
+// IsUUID 判断字符串是否是UUID格式
+func IsUUID(uuid string) bool {
+	re := regexp.MustCompile(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})$`)
+	return re.MatchString(uuid)
 }
