@@ -14,7 +14,7 @@ type ConditionGroup struct {
 }
 
 type PageInfo struct {
-	Total       int64                    `json:"total"`
+	Total       int                      `json:"total"`
 	CurrentPage int                      `json:"current_page"`
 	LastPage    int                      `json:"last_page"`
 	Data        []map[string]interface{} `json:"data"`
@@ -140,8 +140,8 @@ func (q QueryBuilder) Page(query Query) (PageInfo, error) {
 	}
 
 	// get total count
-	var count int64
-	if err := db.Session(&gorm.Session{NewDB: true}).Model(q.Model).Count(&count).Error; err != nil {
+	count, err := QueryBuilder{Model: q.Model}.Count(query.Search)
+	if err != nil {
 		return PageInfo{}, err
 	}
 
@@ -159,7 +159,7 @@ func (q QueryBuilder) Page(query Query) (PageInfo, error) {
 	pageInfo := PageInfo{
 		Total:       count,
 		CurrentPage: query.Page[0],
-		LastPage:    int(count)/query.Page[1] + 1,
+		LastPage:    count/query.Page[1] + 1,
 		Data:        rows,
 	}
 
@@ -249,6 +249,10 @@ func (q QueryBuilder) ParseSearch(db *gorm.DB, groups []ConditionGroup) (*gorm.D
 			values = append(values, value)
 		}
 
+		if len(groupConditions) == 0 {
+			continue
+		}
+
 		if group.Operator == "" {
 			group.Operator = "AND"
 		}
@@ -258,12 +262,14 @@ func (q QueryBuilder) ParseSearch(db *gorm.DB, groups []ConditionGroup) (*gorm.D
 		conditions = append(conditions, fmt.Sprintf("(%s)", groupClause))
 	}
 
+	if len(conditions) == 0 {
+		return db, nil
+	}
+
 	// Combine all group conditions with AND
 	whereClause := strings.Join(conditions, " AND ")
 
-	if len(whereClause) > 0 {
-		db = db.Where(whereClause, values...)
-	}
+	db = db.Where(whereClause, values...)
 
 	return db, nil
 }
@@ -323,6 +329,7 @@ func (q QueryBuilder) ParsePage(db *gorm.DB, page []int) (*gorm.DB, error) {
 }
 
 func (q QueryBuilder) Count(search []ConditionGroup) (int, error) {
+	// todo 需要使用 count 进行查询
 	rows, err := q.Get(Query{Search: search})
 	if err != nil {
 		return 0, err
