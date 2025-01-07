@@ -21,12 +21,13 @@ type PageInfo struct {
 }
 
 type Query struct {
-	Filter  []string         `json:"filter"`
-	Search  []ConditionGroup `json:"search"`
-	OrderBy [][]string       `json:"orderby"`
-	Limit   []int            `json:"limit"`
-	Page    []int            `json:"page"`
-	Include []string         `json:"include"`
+	Filter   []string         `json:"filter"`
+	Search   []ConditionGroup `json:"search"`
+	OrderBy  [][]string       `json:"orderby"`
+	Limit    []int            `json:"limit"`
+	Page     []int            `json:"page"`
+	Include  []string         `json:"include"`
+	Required []string         `json:"-"`
 }
 
 type QueryBuilder struct {
@@ -34,49 +35,80 @@ type QueryBuilder struct {
 }
 
 func (q QueryBuilder) Get(query Query) ([]map[string]interface{}, error) {
-	// db
-	db := DB.Model(q.Model)
+	// define result
+	var ResultFields []map[string]interface{}
 
-	// parse filter fields
-	db, rows, err := q.ParseFilter(db, query.Filter)
+	// db
+	db, err := q.ParseQuery(query, &ResultFields)
 	if err != nil {
 		return nil, err
 	}
 
-	// parse where clause
-	if db, err = q.ParseSearch(db, query.Search); err != nil {
-		return nil, err
-	}
-
-	// parse order by
-	if db, err = q.ParseOrderBy(db, query.OrderBy); err != nil {
-		return nil, err
-	}
-
-	// parse limit
-	if db, err = q.ParseLimit(db, query.Limit); err != nil {
-		return nil, err
-	}
-
-	// parse page
-	if db, err = q.ParsePage(db, query.Page); err != nil {
-		return nil, err
-	}
-
 	// find rows
-	if err := db.Find(&rows).Error; err != nil {
+	if err := db.Find(&ResultFields).Error; err != nil {
 		return nil, err
 	}
 
 	// process time fields
-	for i, _ := range rows {
-		z.FormatTimeInMap(rows[i])
+	for i, _ := range ResultFields {
+		z.FormatTimeInMap(ResultFields[i])
 	}
 
-	return rows, nil
+	return ResultFields, nil
+}
+
+func (q QueryBuilder) Page(query Query) (PageInfo, error) {
+	pager := PageInfo{
+		Total:       0,
+		CurrentPage: 1,
+		LastPage:    1,
+		Data:        []map[string]interface{}{},
+	}
+
+	// set page info
+	if len(query.Page) == 0 {
+		query.Page = []int{1, 10}
+	} else if len(query.Page) == 1 {
+		query.Page = append(query.Page, 10)
+	}
+
+	// define result
+	var ResultFields []map[string]interface{}
+
+	// db
+	db, err := q.ParseQuery(query, &ResultFields)
+	if err != nil {
+		return pager, err
+	}
+
+	// get total count
+	count, err := QueryBuilder{Model: q.Model}.Count(query.Search)
+	if err != nil {
+		return pager, err
+	}
+
+	// get data
+	if err := db.Find(&ResultFields).Error; err != nil {
+		return pager, err
+	}
+
+	// process time fields
+	for i, _ := range ResultFields {
+		z.FormatTimeInMap(ResultFields[i])
+	}
+
+	// calculate page info
+	pager.Total = count
+	pager.CurrentPage = query.Page[0]
+	pager.LastPage = count/query.Page[1] + 1
+	pager.Data = ResultFields
+
+	return pager, nil
 }
 
 func (q QueryBuilder) Find(query Query) (map[string]interface{}, error) {
+	query.Limit = []int{0, 1}
+
 	rows, err := q.Get(query)
 	if err != nil {
 		return nil, err
@@ -95,75 +127,90 @@ func (q QueryBuilder) FindById(id interface{}, query Query) (map[string]interfac
 		Conditions: [][]interface{}{{"id", id}},
 	})
 
-	rows, err := q.Get(query)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(rows) > 0 {
-		return rows[0], nil
-	} else {
-		return nil, nil
-	}
+	return q.Find(query)
 }
 
-func (q QueryBuilder) Page(query Query) (PageInfo, error) {
+func (q QueryBuilder) Count(search []ConditionGroup) (int, error) {
+
+	// define result
+	var ResultFields []map[string]interface{}
+
+	db, err := q.ParseQuery(Query{Search: search}, &ResultFields)
+	if err != nil {
+		return 0, err
+	}
+
+	var count int64
+	if err := db.Count(&count).Error; err != nil {
+		return 0, err
+	}
+
+	return int(count), nil
+}
+
+func (q QueryBuilder) SUM(field string, search []ConditionGroup) (float64, error) {
+
+	// define result
+	var ResultFields []map[string]interface{}
+
+	db, err := q.ParseQuery(Query{Search: search}, &ResultFields)
+	if err != nil {
+		return 0, err
+	}
+
+	var sum float64
+	if err := db.Select(fmt.Sprintf("SUM(%s) as sum", DB.F(field))).Row().Scan(&sum); err != nil {
+		return 0, err
+	}
+
+	return sum, nil
+}
+
+func (q QueryBuilder) Exists(search []ConditionGroup) (bool, error) {
+	count, err := q.Count(search)
+	if err != nil {
+		return false, err
+	}
+
+	return count > 0, err
+}
+
+func (q QueryBuilder) ExistsById(id interface{}) (bool, error) {
+	return q.Exists([]ConditionGroup{{Conditions: [][]interface{}{{"id", id}}}})
+}
+
+func (q QueryBuilder) ParseQuery(query Query, ResultFields *[]map[string]interface{}) (*gorm.DB, error) {
 	// db
 	db := DB.Model(q.Model)
-
-	// set page info
-	if len(query.Page) == 0 {
-		query.Page = []int{1, 10}
-	} else if len(query.Page) == 1 {
-		query.Page = append(query.Page, 10)
-	}
 
 	// parse filter fields
 	db, rows, err := q.ParseFilter(db, query.Filter)
 	if err != nil {
-		return PageInfo{}, err
+		return nil, err
 	}
+	ResultFields = &rows
 
 	// parse where clause
-	if db, err = q.ParseSearch(db, query.Search); err != nil {
-		return PageInfo{}, err
+	if db, err = q.ParseSearch(db, query.Search, query.Required); err != nil {
+		return nil, err
 	}
 
 	// parse order by
 	if db, err = q.ParseOrderBy(db, query.OrderBy); err != nil {
-		return PageInfo{}, err
+		return nil, err
+	}
+
+	// parse limit
+	if db, err = q.ParseLimit(db, query.Limit); err != nil {
+		return nil, err
 	}
 
 	// parse page
 	if db, err = q.ParsePage(db, query.Page); err != nil {
-		return PageInfo{}, err
+		return nil, err
 	}
 
-	// get total count
-	count, err := QueryBuilder{Model: q.Model}.Count(query.Search)
-	if err != nil {
-		return PageInfo{}, err
-	}
-
-	// get data
-	if err := db.Find(&rows).Error; err != nil {
-		return PageInfo{}, err
-	}
-
-	// process time fields
-	for i, _ := range rows {
-		z.FormatTimeInMap(rows[i])
-	}
-
-	// calculate page info
-	pageInfo := PageInfo{
-		Total:       count,
-		CurrentPage: query.Page[0],
-		LastPage:    count/query.Page[1] + 1,
-		Data:        rows,
-	}
-
-	return pageInfo, nil
+	return db, nil
 }
 
 func (q QueryBuilder) ParseFilter(db *gorm.DB, filter []string) (*gorm.DB, []map[string]interface{}, error) {
@@ -183,11 +230,38 @@ func (q QueryBuilder) ParseFilter(db *gorm.DB, filter []string) (*gorm.DB, []map
 	}
 
 	db = db.Select(strings.Join(selectFields, ", "))
-	fmt.Println(z.EncodeJson(rows))
+
 	return db, rows, nil
 }
 
-func (q QueryBuilder) ParseSearch(db *gorm.DB, groups []ConditionGroup) (*gorm.DB, error) {
+func (q QueryBuilder) ParseSearch(db *gorm.DB, groups []ConditionGroup, required []string) (*gorm.DB, error) {
+	// 检查 required 字段是否在 Search 中
+	if len(required) > 0 {
+		requiredFields := make(map[string]bool)
+		for _, field := range required {
+			requiredFields[field] = false
+		}
+
+		for _, group := range groups {
+			for _, condition := range group.Conditions {
+				if len(condition) < 2 {
+					return nil, errors.New("invalid condition: each condition must have at least 2 elements")
+				}
+
+				field := condition[0].(string)
+				if _, exists := requiredFields[field]; exists {
+					requiredFields[field] = true
+				}
+			}
+		}
+
+		for field, found := range requiredFields {
+			if !found {
+				return nil, fmt.Errorf("required field '%s' is missing in search conditions", field)
+			}
+		}
+	}
+
 	var conditions []string
 	var values []interface{}
 
@@ -326,32 +400,4 @@ func (q QueryBuilder) ParsePage(db *gorm.DB, page []int) (*gorm.DB, error) {
 	db = db.Offset(offset).Limit(limit)
 
 	return db, nil
-}
-
-func (q QueryBuilder) Count(search []ConditionGroup) (int, error) {
-	// todo 需要使用 count 进行查询
-	rows, err := q.Get(Query{Search: search})
-	if err != nil {
-		return 0, err
-	}
-
-	return len(rows), err
-}
-
-func (q QueryBuilder) Exists(search []ConditionGroup) (bool, error) {
-	rows, err := q.Get(Query{Search: search})
-	if err != nil {
-		return false, err
-	}
-
-	return len(rows) > 0, err
-}
-
-func (q QueryBuilder) ExistsById(id interface{}) (bool, error) {
-	rows, err := q.Get(Query{Search: []ConditionGroup{{Conditions: [][]interface{}{{"id", id}}}}})
-	if err != nil {
-		return false, err
-	}
-
-	return len(rows) > 0, err
 }

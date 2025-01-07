@@ -11,7 +11,7 @@ func (q UpdateBuilder) Update(search []ConditionGroup, values interface{}) (bool
 	db := DB.Model(q.Model)
 
 	// parse where clause
-	db, err := QueryBuilder{q.Model}.ParseSearch(db, search)
+	db, err := QueryBuilder{q.Model}.ParseSearch(db, search, []string{})
 	if err != nil {
 		return false, err
 	}
