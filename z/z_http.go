@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,14 +21,32 @@ func GetUrl(params string) string {
 	return fmt.Sprintf("%s/%s", strings.Trim(urlCfg, "/"), strings.Trim(params, "/"))
 }
 
+// RequestOptions 包含可选的 HTTP 头信息
+type RequestOptions struct {
+	Headers map[string]string
+}
+
 // Post 发起 POST 请求
-func Post(url string, data map[string]interface{}) (string, error) {
+func Post(url string, data map[string]interface{}, headers map[string]string) (string, error) {
 	values := ToValues(data)
-	res, err := http.Post(
-		url,
-		"application/x-www-form-urlencoded",
-		bytes.NewBufferString(values.Encode()),
-	)
+
+	// 创建一个新的 HTTP 请求
+	req, err := http.NewRequest("POST", url, bytes.NewBufferString(values.Encode()))
+	if err != nil {
+		return "", err
+	}
+
+	// 设置默认的 Content-Type
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// 添加可选的 HTTP 头信息
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	// 发送请求
+	client := &http.Client{}
+	res, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -108,4 +127,21 @@ func Download(url string, filePath string) error {
 	}
 
 	return nil
+}
+
+// GetLocalIP 获取本地 IP 地址
+func GetLocalIP() (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", err
+	}
+	for _, address := range addrs {
+		// 检查 IP 地址是否为 IPv4 并且不是回环地址
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("unable to find local IP address")
 }

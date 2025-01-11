@@ -11,6 +11,7 @@ import (
 const (
 	DEBUG = 1 << iota
 	INFO
+	WARN
 	ERROR
 )
 
@@ -18,6 +19,7 @@ const (
 var (
 	Debug *sysLog.Logger
 	Info  *sysLog.Logger
+	Warn  *sysLog.Logger
 	Error *sysLog.Logger
 )
 
@@ -36,6 +38,7 @@ func (logger *_logger) Init(writeLogFile bool, debugMode bool) {
 	logger.DebugMode = debugMode
 	debugWriters := []io.Writer{&_customWriter{types: DEBUG}}
 	infoWriters := []io.Writer{&_customWriter{types: INFO}}
+	warnWriters := []io.Writer{&_customWriter{types: WARN}}
 	errorWriters := []io.Writer{&_customWriter{types: ERROR}}
 
 	// enable write log ?
@@ -50,6 +53,7 @@ func (logger *_logger) Init(writeLogFile bool, debugMode bool) {
 		if debugMode {
 			debugWriters = append(debugWriters, logFile)
 			infoWriters = append(infoWriters, logFile)
+			warnWriters = append(warnWriters, logFile)
 		}
 		errorWriters = append(errorWriters, logFile)
 	}
@@ -62,6 +66,7 @@ func (logger *_logger) Init(writeLogFile bool, debugMode bool) {
 
 	Debug = sysLog.New(io.MultiWriter(debugWriters...), "[DEBUG] ", errorFormat)
 	Info = sysLog.New(io.MultiWriter(infoWriters...), "[INFO]  ", errorFormat)
+	Warn = sysLog.New(io.MultiWriter(warnWriters...), "[WARN]  ", errorFormat)
 	Error = sysLog.New(io.MultiWriter(errorWriters...), "[FATAL] ", errorFormat)
 }
 
@@ -77,6 +82,9 @@ func (w _customWriter) Write(data []byte) (n int, err error) {
 		_, _ = color.New(color.FgWhite).Print(string(data[8:]))
 	} else if INFO == w.types {
 		_, _ = color.New(color.FgHiCyan).Print("[INFO]  ")
+		_, _ = color.New(color.FgWhite).Print(string(data[8:]))
+	} else if WARN == w.types {
+		_, _ = color.New(color.FgHiYellow).Print("[WARN] ")
 		_, _ = color.New(color.FgWhite).Print(string(data[8:]))
 	} else if ERROR == w.types {
 		_, _ = color.New(color.FgHiRed).Print("[ERROR] ")
