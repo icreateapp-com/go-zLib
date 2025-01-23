@@ -2,6 +2,7 @@ package z
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -62,9 +63,31 @@ func Post(url string, data map[string]interface{}, headers map[string]string) (s
 	return string(body), nil
 }
 
-// Get 发起 GET 请求
-func Get(url string) (string, error) {
-	res, err := http.Get(url)
+// PostJson 发起 POST JSON 请求
+func PostJson(url string, data map[string]interface{}, headers map[string]string) (string, error) {
+	// 将数据序列化为 JSON 字符串
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+
+	// 创建一个新的 HTTP 请求
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+
+	// 设置默认的 Content-Type
+	req.Header.Set("Content-Type", "application/json")
+
+	// 添加可选的 HTTP 头信息
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	// 发送请求
+	client := &http.Client{}
+	res, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -78,6 +101,81 @@ func Get(url string) (string, error) {
 	}
 
 	return string(body), nil
+}
+
+// Get 发起 GET 请求
+func Get(url string, headers map[string]string) (string, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	// 添加可选的 HTTP 头信息
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = res.Body.Close()
+	}()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}
+
+// Put 发送 PUT 请求
+func Put(url string, data map[string]interface{}, headers map[string]string) (string, error) {
+	values := ToValues(data)
+
+	req, err := http.NewRequest("PUT", url, bytes.NewBufferString(values.Encode()))
+	if err != nil {
+		return "", err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(respBody), nil
+}
+
+// Delete 发送 DELETE 请求
+func Delete(url string, headers map[string]string) (string, error) {
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return "", err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(respBody), nil
 }
 
 // IsUrl 判断是否是有效的URL

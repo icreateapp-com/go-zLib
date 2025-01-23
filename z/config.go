@@ -2,8 +2,10 @@ package z
 
 import (
 	"errors"
+	"fmt"
 	"github.com/spf13/viper"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,6 +16,7 @@ var configs map[string]*viper.Viper
 
 // config 结构体
 type config struct {
+	envPrefix string
 }
 
 // Config 全局配置对象
@@ -41,6 +44,8 @@ func (c *config) LoadDir(dir string) error {
 // LoadFile 加载指定文件
 func (c *config) LoadFile(dir string, filename string) error {
 
+	c.envPrefix = c.GetEnvPrefix()
+
 	if ".yml" != filepath.Ext(filename) {
 		return nil
 	}
@@ -65,6 +70,31 @@ func (c *config) LoadFile(dir string, filename string) error {
 	return nil
 }
 
+// SetEnvs 将配置信息写入环境变量
+func (c *config) SetEnvs(configs map[string]interface{}) error {
+	for key, value := range configs {
+		envKey := strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
+		envKey = fmt.Sprintf("%s_%s", c.envPrefix, envKey)
+		if err := os.Setenv(envKey, fmt.Sprintf("%v", value)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// GetEnvPrefix 获取 env 前缀
+func (c *config) GetEnvPrefix() string {
+	name, err := c.String("config.name")
+	if err != nil {
+		name = "ICREATEAPP"
+	} else {
+		name = strings.ToUpper(name)
+	}
+
+	return name
+}
+
 // parseName 解析配置文件名和配置项名
 func (c *config) parseName(name string) (v *viper.Viper, valueName string, err error) {
 	names := strings.Split(name, ".")
@@ -75,6 +105,15 @@ func (c *config) parseName(name string) (v *viper.Viper, valueName string, err e
 
 	_fileName := names[0]
 	_valueName := strings.Join(names[1:], ".")
+
+	// 优先从环境变量中读取
+	envVarName := strings.ToUpper(strings.ReplaceAll(name, ".", "_"))
+	envVarName = fmt.Sprintf("%s_%s", c.envPrefix, envVarName)
+	if envValue, ok := os.LookupEnv(envVarName); ok {
+		tempViper := viper.New()
+		tempViper.Set(_valueName, envValue)
+		return tempViper, _valueName, nil
+	}
 
 	if v := configs[_fileName]; v != nil {
 		return v, _valueName, nil

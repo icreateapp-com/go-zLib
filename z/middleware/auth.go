@@ -1,11 +1,9 @@
 package middleware
 
 import (
-	"fmt"
 	"github.com/gin-gonic/gin"
 	. "github.com/icreateapp-com/go-zLib/z"
 	"net/http"
-	"regexp"
 	"strings"
 )
 
@@ -34,14 +32,29 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 根据访问域判断采样那个 token 进行验证
-		re := regexp.MustCompile(`/api/([^/]+)`)
-		domain := re.FindStringSubmatch(c.Request.URL.Path)
-		if len(domain) >= 2 {
-			configToken, _ := Config.String(fmt.Sprintf("config.auth.%s", domain[1]))
-			if inputToken == configToken {
-				c.Next()
-				return
+		// 获取 auth 配置
+		authConfig, err := Config.StringMap("config.auth")
+		if err != nil {
+			c.JSON(401, gin.H{"error": "Unauthorized"})
+			c.Abort()
+			return
+		}
+
+		// 标准化请求路径
+		requestPath := strings.TrimPrefix(c.Request.URL.Path, "/")
+
+		// 遍历 auth 配置，找到匹配的路径前缀
+		for pathPrefix, configToken := range authConfig {
+			normalizedPrefix := strings.TrimPrefix(pathPrefix, "/")
+			if strings.HasPrefix(requestPath, normalizedPrefix) {
+				if inputToken == configToken {
+					c.Next()
+					return
+				} else {
+					c.JSON(401, gin.H{"error": "Unauthorized"})
+					c.Abort()
+					return
+				}
 			}
 		}
 

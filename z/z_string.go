@@ -1,7 +1,9 @@
 package z
 
 import (
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -38,4 +40,45 @@ func ToSnakeCase(str string) string {
 		}
 	}
 	return snakeCase
+}
+
+// GetJsonByString 从字符串中提取JSON对象
+func GetJsonByString(input string) (interface{}, error) {
+	// Define a regular expression that matches JSON objects, arrays, strings, numbers, booleans, and null.
+	re := regexp.MustCompile(`(?s)\{.*?\}|\[.*?\]|"(?:\\.|[^"\\])*"|[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null`)
+	matches := re.FindStringSubmatch(input)
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no valid JSON found")
+	}
+
+	var result interface{}
+	jsonValue := matches[0]
+
+	// Try to unmarshal as JSON object or array.
+	if err := json.Unmarshal([]byte(jsonValue), &result); err == nil {
+		return result, nil
+	}
+
+	// Try to parse as a number.
+	if num, err := strconv.ParseFloat(jsonValue, 64); err == nil {
+		return num, nil
+	}
+
+	// Check for true, false, null.
+	switch jsonValue {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	case "null":
+		return nil, nil
+	}
+
+	// If it's a JSON string, remove quotes and return the string value.
+	if len(jsonValue) > 0 && jsonValue[0] == '"' && jsonValue[len(jsonValue)-1] == '"' {
+		result, _ = strconv.Unquote(jsonValue)
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("no valid JSON found")
 }

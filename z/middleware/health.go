@@ -14,6 +14,7 @@ func HealthMiddleware() gin.HandlerFunc {
 				"status":    "UP",
 				"timestamp": time.Now().Unix(),
 			})
+			z.MemCache.Set("__last_health_check_time__", time.Now().Unix(), time.Minute)
 			c.Abort()
 		}
 
@@ -27,6 +28,7 @@ func HealthMiddleware() gin.HandlerFunc {
 				"name":      name,
 				"host":      fmt.Sprintf("%s:%d", host, port),
 			})
+			z.MemCache.Set("__last_health_check_time__", time.Now().Unix(), time.Minute)
 			c.Abort()
 		}
 

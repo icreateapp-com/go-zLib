@@ -1,10 +1,12 @@
 package z
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"reflect"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -58,7 +60,7 @@ func RemoveFields(model interface{}, fields ...string) interface{} {
 	var newModelFields []reflect.StructField
 	for i := 0; i < modelType.NumField(); i++ {
 		field := modelType.Field(i)
-		if !Contains(fields, field.Name) {
+		if !InStringSlice(fields, field.Name) {
 			newModelFields = append(newModelFields, reflect.StructField{
 				Name: field.Name,
 				Type: field.Type,
@@ -72,7 +74,7 @@ func RemoveFields(model interface{}, fields ...string) interface{} {
 
 	for i := 0; i < modelType.NumField(); i++ {
 		field := modelType.Field(i)
-		if !Contains(fields, field.Name) {
+		if !InStringSlice(fields, field.Name) {
 			newModelValue.FieldByName(field.Name).Set(modelValue.Field(i))
 		}
 	}
@@ -80,8 +82,8 @@ func RemoveFields(model interface{}, fields ...string) interface{} {
 	return newModelValue.Interface()
 }
 
-// Contains 判断字符串是否在切片中
-func Contains(slice []string, str string) bool {
+// InStringSlice 判断字符串是否在切片中
+func InStringSlice(slice []string, str string) bool {
 	for _, v := range slice {
 		if v == str {
 			return true
@@ -144,4 +146,65 @@ func FormatTimeInMap(m map[string]interface{}) {
 			}
 		}
 	}
+}
+
+// ToStruct 函数将 interface{} 转换为指定的 struct 类型
+func ToStruct(data interface{}, target interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(jsonData, &target); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ToFloat64 将接口转换为 float64
+func ToFloat64(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case string:
+		num, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num, true
+	default:
+		return 0, false
+	}
+}
+
+// ToBool 将接口转换为 bool
+func ToBool(value interface{}) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case string:
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return false, false
+		}
+		return b, true
+	default:
+		return false, false
+	}
+}
+
+// GetStructField 使用反射获取结构体字段的值
+func GetStructField(s interface{}, fieldName string) (interface{}, bool) {
+	val := reflect.ValueOf(s).Elem()
+	field := val.FieldByName(fieldName)
+	if field.IsValid() {
+		return field.Interface(), true
+	}
+	return nil, false
 }
