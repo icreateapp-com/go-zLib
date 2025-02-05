@@ -82,3 +82,33 @@ func GetJsonByString(input string) (interface{}, error) {
 
 	return nil, fmt.Errorf("no valid JSON found")
 }
+
+// TernaryString 三元运算符
+func TernaryString(condition bool, trueValue, falseValue string) string {
+	if condition {
+		return trueValue
+	}
+	return falseValue
+}
+
+// StringToSlice 将输入字符串按指定分割因素分割成切片
+func StringToSlice(input string, separators ...string) []string {
+	for _, sep := range separators[1:] {
+		input = strings.ReplaceAll(input, sep, separators[0])
+	}
+
+	splitSlice := strings.Split(input, separators[0])
+
+	for i := range splitSlice {
+		splitSlice[i] = strings.TrimSpace(splitSlice[i])
+	}
+
+	var result []string
+	for _, element := range splitSlice {
+		if element != "" {
+			result = append(result, element)
+		}
+	}
+
+	return result
+}

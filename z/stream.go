@@ -18,7 +18,7 @@ func (e *streamSender) New(c *gin.Context) {
 	e.context = c
 }
 
-func (e *streamSender) IsInstance() bool {
+func (e *streamSender) Initialized() bool {
 	return e.context != nil
 }
 
@@ -62,4 +62,10 @@ func (e *streamSender) Error(message string) {
 // Done 输出流式完成信息
 func (e *streamSender) Done(message string) {
 	e.Send("done", message)
+	e.context.Writer.WriteHeader(http.StatusOK)
+	e.context.Writer.Write([]byte("\n"))
+	e.flusher.Flush()
+	// 清理资源
+	e.context = nil
+	e.flusher = nil
 }

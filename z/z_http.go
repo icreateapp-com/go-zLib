@@ -3,10 +3,12 @@ package z
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,16 +17,18 @@ import (
 	"strings"
 )
 
+// SendRequestResponse 返回结果结构体
+type SendRequestResponse struct {
+	StatusCode int
+	Body       string
+	Headers    http.Header
+}
+
 // GetUrl 生成当前服务器的 URL 地址
 func GetUrl(params string) string {
 	urlCfg, _ := Config.String("_config.url")
 
 	return fmt.Sprintf("%s/%s", strings.Trim(urlCfg, "/"), strings.Trim(params, "/"))
-}
-
-// RequestOptions 包含可选的 HTTP 头信息
-type RequestOptions struct {
-	Headers map[string]string
 }
 
 // Post 发起 POST 请求
@@ -242,4 +246,149 @@ func GetLocalIP() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("unable to find local IP address")
+}
+
+// AppendQueryParamsToURL 将查询参数字典拼接到 URL 中
+func AppendQueryParamsToURL(originalURL string, params map[string]interface{}) (string, error) {
+	// 解析原始 URL
+	parsedURL, err := url.Parse(originalURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse URL: %w", err)
+	}
+
+	queryValues := parsedURL.Query()
+
+	for key, value := range params {
+		queryValues.Add(key, ToString(value))
+	}
+
+	parsedURL.RawQuery = queryValues.Encode()
+
+	return parsedURL.String(), nil
+}
+
+// Request 发送请求
+func Request(url string, method string, headers map[string]string, paramType string, params map[string]interface{}) (*SendRequestResponse, error) {
+	var req *http.Request
+	var err error
+
+	// 创建请求体
+	var body io.Reader
+	switch strings.ToLower(paramType) {
+	case "form-data":
+		body, err = CreateFormData(params)
+	case "x-www-form-urlencoded":
+		body, err = CreateFormURLEncoded(params)
+	case "json":
+		body, err = CreateJSON(params)
+	case "xml":
+		body, err = CreateXML(params)
+	case "raw":
+		body = CreateRaw(params)
+	case "binary":
+		body = CreateBinary(params)
+	default:
+		return nil, fmt.Errorf("unsupported param type: %s", paramType)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request body: %w", err)
+	}
+
+	// 创建请求
+	req, err = http.NewRequest(strings.ToUpper(method), url, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// 设置请求头
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// 构建返回结果
+	response := &SendRequestResponse{
+		StatusCode: resp.StatusCode,
+		Body:       string(respBody),
+		Headers:    resp.Header,
+	}
+
+	return response, nil
+}
+
+// CreateFormData 创建 Form-Data 请求体
+func CreateFormData(params map[string]interface{}) (io.Reader, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	for key, value := range params {
+		if err := writer.WriteField(key, ToString(value)); err != nil {
+			return nil, fmt.Errorf("failed to write form field %s: %w", key, err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close form writer: %w", err)
+	}
+
+	return body, nil
+}
+
+// CreateFormURLEncoded 创建 x-www-form-urlencoded 请求体
+func CreateFormURLEncoded(params map[string]interface{}) (io.Reader, error) {
+	values := url.Values{}
+	for key, value := range params {
+		values.Add(key, ToString(value))
+	}
+	return strings.NewReader(values.Encode()), nil
+}
+
+// CreateJSON 创建 JSON 请求体
+func CreateJSON(params map[string]interface{}) (io.Reader, error) {
+	jsonData, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	return bytes.NewBuffer(jsonData), nil
+}
+
+// CreateXML 创建 XML 请求体
+func CreateXML(params map[string]interface{}) (io.Reader, error) {
+	xmlData, err := xml.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal XML: %w", err)
+	}
+	return bytes.NewBuffer(xmlData), nil
+}
+
+// CreateRaw 创建 Raw 请求体
+func CreateRaw(params map[string]interface{}) io.Reader {
+	// 假设 params 是一个包含 raw 数据的 map
+	if raw, ok := params["raw"].(string); ok {
+		return strings.NewReader(raw)
+	}
+	return strings.NewReader("")
+}
+
+// CreateBinary 创建 Binary 请求体
+func CreateBinary(params map[string]interface{}) io.Reader {
+	// 假设 params 是一个包含 binary 数据的 map
+	if binary, ok := params["binary"].([]byte); ok {
+		return bytes.NewBuffer(binary)
+	}
+	return bytes.NewBuffer(nil)
 }
