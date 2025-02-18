@@ -1,14 +1,23 @@
 package db
 
-import "errors"
+import (
+	"errors"
+	"gorm.io/gorm"
+)
 
 type UpdateBuilder struct {
 	Model interface{}
+	TX    *gorm.DB
 }
 
 func (q UpdateBuilder) Update(search []ConditionGroup, values interface{}) (bool, error) {
 	// db
-	db := DB.Model(q.Model)
+	var db *gorm.DB
+	if q.TX != nil {
+		db = q.TX
+	} else {
+		db = DB.Model(q.Model)
+	}
 
 	// parse where clause
 	db, err := QueryBuilder{q.Model}.ParseSearch(db, search, []string{})

@@ -201,8 +201,15 @@ func ToBool(value interface{}) (bool, bool) {
 
 // GetStructField 使用反射获取结构体字段的值
 func GetStructField(s interface{}, fieldName string) (interface{}, bool) {
-	val := reflect.ValueOf(s).Elem()
-	field := val.FieldByName(fieldName)
+	if s == nil {
+		return nil, false
+	}
+	val := reflect.ValueOf(s)
+	if val.Kind() != reflect.Ptr || val.IsNil() {
+		return nil, false
+	}
+	elem := val.Elem()
+	field := elem.FieldByName(fieldName)
 	if field.IsValid() {
 		return field.Interface(), true
 	}

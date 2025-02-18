@@ -1,12 +1,20 @@
 package db
 
+import "gorm.io/gorm"
+
 type DeleteBuilder struct {
 	Model interface{}
+	TX    *gorm.DB
 }
 
 func (q DeleteBuilder) Delete(search []ConditionGroup) (bool, error) {
 	// db
-	db := DB.Model(q.Model)
+	var db *gorm.DB
+	if q.TX != nil {
+		db = q.TX
+	} else {
+		db = DB.Model(q.Model)
+	}
 
 	// parse where clause
 	db, err := QueryBuilder{q.Model}.ParseSearch(db, search, []string{})
