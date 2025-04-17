@@ -31,6 +31,9 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		if strings.HasPrefix(inputToken, "Bearer ") {
+			inputToken = strings.TrimPrefix(inputToken, "Bearer ")
+		}
 
 		// 获取 auth 配置
 		authConfig, err := Config.StringMap("config.auth")

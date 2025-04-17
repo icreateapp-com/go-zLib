@@ -8,6 +8,7 @@ import (
 type _memCache struct {
 	cache             *cache.Cache
 	DefaultExpiration time.Duration
+	initialized       bool
 }
 
 // MemCache 内存缓存
@@ -15,9 +16,12 @@ var MemCache _memCache
 
 // Init 初始化缓存（默认有效期，清理缓存间隔时间）
 func (p *_memCache) Init(defaultExpiration, cleanupInterval time.Duration) {
+	if p.initialized {
+		return
+	}
 	p.DefaultExpiration = defaultExpiration
 	p.cache = cache.New(defaultExpiration, cleanupInterval)
-
+	p.initialized = true
 }
 
 // Set 创建缓存

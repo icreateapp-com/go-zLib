@@ -49,6 +49,22 @@ type serviceDiscoverProvider struct {
 var ServiceDiscoverProvider serviceDiscoverProvider
 
 // Register 服务注册
+// 示例：
+// 在配置文件中添加以下配置项：
+// config:
+//
+//	service_discover:
+//	  address: "http://localhost:8080"
+//	  apikey: "your_api_key"
+//	  cache_ttl: 300
+//	  check: true
+//	  check_interval: 5
+//	  lost_timeout: 10
+//	name: "your_service_name"
+//	port: 8081
+//	auth:
+//	  token1: "value1"
+//	  token2: "value2"
 func (s *serviceDiscoverProvider) Register() {
 	// 初始化缓存
 	s.CacheService = make(map[string]ServiceDiscoverServiceInfo)
@@ -92,6 +108,9 @@ func (s *serviceDiscoverProvider) registerService() error {
 	if err != nil {
 		return err
 	}
+
+	address = TernaryString(strings.HasPrefix(address, "http"), address, "http://"+address)
+
 	apikey, err := Config.String("config.service_discover.apikey")
 	if err != nil {
 		return err

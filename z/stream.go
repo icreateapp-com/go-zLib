@@ -1,71 +1,89 @@
 package z
 
 import (
-	"fmt"
 	"github.com/gin-gonic/gin"
+	"log"
 	"net/http"
-	"strings"
 )
 
-type streamSender struct {
-	context *gin.Context
+type StreamSender struct {
+	Context *gin.Context
 	flusher http.Flusher
 }
 
-var StreamSender streamSender
-
-func (e *streamSender) New(c *gin.Context) {
-	e.context = c
-}
-
-func (e *streamSender) Initialized() bool {
-	return e.context != nil
-}
-
-// Header 输出流式头部
-func (e *streamSender) Header(mode string) {
-	if flusher, ok := e.context.Writer.(http.Flusher); !ok {
-		Error.Println("StreamHeader error: not support flusher")
-	} else {
-		e.flusher = flusher
+// NewStreamSender 初始化流式服务，支持 event-stream 模式
+func NewStreamSender(c *gin.Context) *StreamSender {
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		log.Printf("Error: stream error - not support flusher")
+		c.Writer.WriteHeader(http.StatusInternalServerError)
+		return nil
 	}
 
-	if strings.HasPrefix(mode, "text/") {
-		mode = strings.TrimPrefix(mode, "text/")
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeader(http.StatusOK)
+
+	return &StreamSender{
+		Context: c,
+		flusher: flusher,
 	}
-	e.context.Writer.Header().Set("Content-Type", fmt.Sprintf("text/%s", mode))
-	e.context.Writer.Header().Set("Cache-Control", "no-cache")
-	e.context.Writer.Header().Set("Connection", "keep-alive")
-	e.context.Writer.Header().Set("X-Accel-Buffering", "no")
 }
 
-// Send 输出流式数据
-func (e *streamSender) Send(event string, message string) {
-	data := fmt.Sprintf("event: %s\ndata: %s\n\n", event, message)
-	if _, err := e.context.Writer.WriteString(data); err != nil {
-		Error.Println("StreamSend error:", err)
+// writeData 写入数据到响应流
+func (e *StreamSender) writeData(data []byte) error {
+	if _, err := e.Context.Writer.Write(data); err != nil {
+		log.Printf("Error: stream write error - %v", err)
+		return err
 	}
+	return nil
+}
+
+// SendMessage 发送普通消息
+func (e *StreamSender) SendMessage(message string) {
+	if e.flusher == nil {
+		log.Printf("Error: stream error - flusher not initialized")
+		return
+	}
+
+	// 优化写入逻辑，减少多次调用
+	data := []byte("data: " + message + "\n\n")
+	if err := e.writeData(data); err != nil {
+		return
+	}
+
 	e.flusher.Flush()
 }
 
-// Message 输出流式消息
-func (e *streamSender) Message(message string) {
-	e.Send("message", message)
-}
+// SendError 发送错误消息
+func (e *StreamSender) SendError(errMsg string) {
+	if e.flusher == nil {
+		log.Printf("Error: stream error - flusher not initialized")
+		return
+	}
 
-// StreamSendError 输出流式错误信息
-func (e *streamSender) Error(message string) {
-	e.Send("error", message)
-	e.Done("")
-}
+	// 优化写入逻辑，减少多次调用
+	data := []byte("event: error\ndata: " + errMsg + "\n\n")
+	if err := e.writeData(data); err != nil {
+		return
+	}
 
-// Done 输出流式完成信息
-func (e *streamSender) Done(message string) {
-	e.Send("done", message)
-	e.context.Writer.WriteHeader(http.StatusOK)
-	e.context.Writer.Write([]byte("\n"))
 	e.flusher.Flush()
-	// 清理资源
-	e.context = nil
-	e.flusher = nil
+}
+
+// SendDone 结束流式响应
+func (e *StreamSender) SendDone() {
+	if e.flusher == nil {
+		log.Printf("Error: stream error - flusher not initialized")
+		return
+	}
+
+	// 确保结束时的空行符合标准
+	if err := e.writeData([]byte("\n\n")); err != nil {
+		return
+	}
+
+	e.flusher.Flush()
 }

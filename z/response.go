@@ -29,5 +29,8 @@ func Failure(c *gin.Context, message any, code ...int) {
 	if len(code) == 0 {
 		code = append(code, 20000)
 	}
+	if msg, ok := message.(string); ok && msg == "EOF" {
+		message = "the body must be a json"
+	}
 	c.JSON(http.StatusOK, Response{Success: false, Message: message, Code: code[0]})
 }

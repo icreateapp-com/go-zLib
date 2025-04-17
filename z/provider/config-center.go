@@ -43,6 +43,18 @@ type configCenterProvider struct {
 var ConfigCenterProvider configCenterProvider
 
 // Register 注册配置中心
+// 示例：
+// 配置文件示例：
+// config:
+//
+//	name: example-service
+//	port: 8080
+//	config_center:
+//	  version: 1
+//	  address: http://config-center.example.com
+//	  env_id: env123
+//	  token: token123
+//	  callback: http://example-service.example.com/.well-known/config
 func (c *configCenterProvider) Register() {
 	var err error
 	c.version, err = Config.Int64("config.config_center.version")
@@ -156,6 +168,11 @@ func (c *configCenterProvider) Sync() error {
 	return nil
 }
 
+// Middleware 提供中间件来处理配置中心的通知
+// 示例：
+// 当接收到配置中心的通知时，中间件会检查版本并同步配置
+// 请求示例：
+// GET /.well-known/config?id=123&code=env123&version=2
 func (c *configCenterProvider) Middleware() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if ctx.Request.URL.Path == "/.well-known/config" {
