@@ -49,6 +49,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		// 遍历 auth 配置，找到匹配的路径前缀
 		for pathPrefix, configToken := range authConfig {
 			normalizedPrefix := strings.TrimPrefix(pathPrefix, "/")
+
 			if strings.HasPrefix(requestPath, normalizedPrefix) {
 				if inputToken == configToken {
 					c.Next()

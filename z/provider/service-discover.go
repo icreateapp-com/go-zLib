@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	. "github.com/icreateapp-com/go-zLib/z"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"net/url"
 	"strings"
 	"time"
@@ -11,8 +13,10 @@ import (
 
 type ServiceDiscoverServiceInfo struct {
 	Name      string            `json:"name"`       // 服务名称
+	Host      string            `json:"host"`       // 服务地址
 	Port      int               `json:"port"`       // 服务端口
-	Address   string            `json:"address"`    // 服务地址
+	GrpcHost  string            `json:"grpc_host"`  // GRPC 地址
+	GrpcPort  int               `json:"grpc_port"`  // GRPC 端口
 	Latency   int               `json:"latency"`    // 响应延迟
 	AuthToken map[string]string `json:"auth_token"` // 访问令牌
 }
@@ -110,6 +114,7 @@ func (s *serviceDiscoverProvider) registerService() error {
 	}
 
 	address = TernaryString(strings.HasPrefix(address, "http"), address, "http://"+address)
+	address = strings.TrimSuffix(address, "/")
 
 	apikey, err := Config.String("config.service_discover.apikey")
 	if err != nil {
@@ -117,11 +122,13 @@ func (s *serviceDiscoverProvider) registerService() error {
 	}
 
 	name, _ := Config.String("config.name")
+	host, _ := Config.String("config.host")
 	port, _ := Config.Int("config.port")
+	grpcHost, _ := Config.String("config.grpc.host")
+	grpcPort, _ := Config.Int("config.grpc.port")
 
-	ip, err := GetLocalIP()
-	if err != nil {
-		return err
+	if len(grpcHost) == 0 || grpcHost == "0.0.0.0" {
+		grpcHost, _ = GetLocalIP()
 	}
 
 	tokens, err := Config.StringMap("config.auth")
@@ -136,7 +143,9 @@ func (s *serviceDiscoverProvider) registerService() error {
 		data := map[string]interface{}{
 			"name":       name,
 			"port":       port,
-			"address":    ip,
+			"host":       host,
+			"grpc_host":  grpcHost,
+			"grpc_port":  grpcPort,
 			"auth_token": tokens,
 		}
 		res, err := PostJson(
@@ -167,7 +176,7 @@ func (s *serviceDiscoverProvider) registerService() error {
 
 		if !response.Success {
 			if attempt < maxRetries {
-				Warn.Printf("Retrying in %d seconds...", retryInterval)
+				Warn.Printf("Retrying in %d seconds..., %s", retryInterval, response.Message)
 				time.Sleep(time.Duration(retryInterval) * time.Second)
 			} else {
 				return fmt.Errorf("registration failed: %s", response.Message)
@@ -210,6 +219,8 @@ func (s *serviceDiscoverProvider) GetAllServiceAddress(name string) (*[]ServiceD
 	if err != nil {
 		Error.Fatalf("service register failed: %s", err.Error())
 	}
+	address = strings.TrimSuffix(address, "/")
+
 	apikey, err := Config.String("config.service_discover.apikey")
 	if err != nil {
 		Error.Fatalf("service register failed: %s", err.Error())
@@ -244,6 +255,8 @@ func (s *serviceDiscoverProvider) GetBestServiceAddress(name string) (*ServiceDi
 	if err != nil {
 		Error.Fatalf("service register failed: %s", err.Error())
 	}
+	address = strings.TrimSuffix(address, "/")
+
 	apikey, err := Config.String("config.service_discover.apikey")
 	if err != nil {
 		Error.Fatalf("service register failed: %s", err.Error())
@@ -278,7 +291,7 @@ func (s *serviceDiscoverProvider) Call(name string, request ServiceRequestParam,
 	}
 
 	// 检查服务地址是否为空
-	if service.Address == "" {
+	if service.Host == "" {
 		return fmt.Errorf("service address is empty")
 	}
 
@@ -303,7 +316,7 @@ func (s *serviceDiscoverProvider) Call(name string, request ServiceRequestParam,
 
 	// 重新构建请求 URL
 	parsedURL.RawQuery = queryParams.Encode()
-	fullUrl := fmt.Sprintf("http://%s:%d%s", service.Address, service.Port, parsedURL.String())
+	fullUrl := fmt.Sprintf("http://%s:%d%s", service.Host, service.Port, parsedURL.String())
 
 	// 构建请求头
 	headers := map[string]string{
@@ -353,4 +366,34 @@ func (s *serviceDiscoverProvider) Call(name string, request ServiceRequestParam,
 	}
 
 	return nil
+}
+
+// Grpc gRPC 服务
+func (s *serviceDiscoverProvider) Grpc(name string, handler func(*grpc.ClientConn) error) error {
+	// 获取服务
+	name = strings.ToLower(name)
+	service, err := ServiceDiscoverProvider.GetBestServiceAddress(name)
+	if err != nil {
+		return err
+	}
+
+	// 检查服务地址是否为空
+	if service.GrpcHost == "" {
+		return fmt.Errorf("service address is empty")
+	}
+
+	// 检查端口是否有效
+	if service.GrpcPort < 1 || service.GrpcPort > 65535 {
+		return fmt.Errorf("invalid service port: %d", service.Port)
+	}
+
+	// 连接gRPC服务器
+	address := fmt.Sprintf("%s:%d", service.GrpcHost, service.GrpcPort)
+	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("service %s connection error: %s", service.Name, service.Host)
+	}
+	defer conn.Close()
+
+	return handler(conn)
 }
