@@ -127,6 +127,10 @@ func (s *serviceDiscoverProvider) registerService() error {
 	grpcHost, _ := Config.String("config.grpc.host")
 	grpcPort, _ := Config.Int("config.grpc.port")
 
+	if len(host) == 0 || host == "0.0.0.0" {
+		host, _ = GetLocalIP()
+	}
+
 	if len(grpcHost) == 0 || grpcHost == "0.0.0.0" {
 		grpcHost, _ = GetLocalIP()
 	}
