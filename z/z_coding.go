@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"io"
 	"log"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -51,6 +53,36 @@ func DecodeJson(str string) (map[string]interface{}, error) {
 	return result, nil
 }
 
+// EncodeYaml YAML 编码
+func EncodeYaml(v any) (string, error) {
+	res, err := yaml.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+
+	return string(res), nil
+}
+
+// DecodeYaml YAML 解码
+func DecodeYaml(str string) (interface{}, error) {
+	var result interface{}
+	if err := yaml.Unmarshal([]byte(str), &result); err != nil {
+		return result, err
+	}
+
+	return result, nil
+}
+
+// EncodeUrl URL 编码
+func EncodeUrl(v string) (string, error) {
+	return url.QueryEscape(v), nil
+}
+
+// DecodeUrl URL 解码
+func DecodeUrl(v string) (interface{}, error) {
+	return url.QueryUnescape(v)
+}
+
 // DecodeJsonValue JSON 解码并返回其中一个值
 func DecodeJsonValue(str string, key string) (string, error) {
 	res, err := DecodeJson(str)
@@ -66,15 +98,15 @@ func DecodeJsonValue(str string, key string) (string, error) {
 }
 
 // EncodeBase64 Base64 编码
-func EncodeBase64(str string) string {
-	return base64.StdEncoding.EncodeToString([]byte(str))
+func EncodeBase64(str string) (string, error) {
+
+	return base64.StdEncoding.EncodeToString([]byte(str)), nil
 }
 
 // DecodeBase64 Base64 解码
 func DecodeBase64(str string) (string, error) {
 	decodeString, err := base64.StdEncoding.DecodeString(str)
 	if err != nil {
-		log.Println(err)
 		return "", err
 	}
 	return string(decodeString), nil

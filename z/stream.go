@@ -1,9 +1,10 @@
 package z
 
 import (
-	"github.com/gin-gonic/gin"
-	"log"
+	"errors"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
 type StreamSender struct {
@@ -11,31 +12,42 @@ type StreamSender struct {
 	flusher http.Flusher
 }
 
-// NewStreamSender 初始化流式服务，支持 event-stream 模式
-func NewStreamSender(c *gin.Context) *StreamSender {
-	flusher, ok := c.Writer.(http.Flusher)
+// NewStreamSender SetHeaders 设置响应头
+func NewStreamSender(ctx *gin.Context) *StreamSender {
+	f, ok := ctx.Writer.(http.Flusher)
 	if !ok {
-		log.Printf("Error: stream error - not support flusher")
-		c.Writer.WriteHeader(http.StatusInternalServerError)
-		return nil
+		Error.Println("stream error: not support flusher")
 	}
 
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
+	ctx.Writer.Header().Set("Content-Type", "text/event-stream")
+	ctx.Writer.Header().Set("Cache-Control", "no-cache")
+	ctx.Writer.Header().Set("Connection", "keep-alive")
+	ctx.Writer.Header().Set("X-Accel-Buffering", "no")
+	ctx.Writer.Header().Del("Content-Length")
+	ctx.Writer.WriteHeader(http.StatusOK)
 
 	return &StreamSender{
-		Context: c,
-		flusher: flusher,
+		Context: ctx,
+		flusher: f,
 	}
 }
 
 // writeData 写入数据到响应流
 func (e *StreamSender) writeData(data []byte) error {
+	if e.Context == nil || e.Context.Writer == nil {
+		Error.Println("stream error: context or writer is nil")
+		return errors.New("context or writer is nil")
+	}
+	if cn, ok := e.Context.Writer.(http.CloseNotifier); ok {
+		select {
+		case <-cn.CloseNotify():
+			Error.Println("stream error: client closed connection")
+			return errors.New("client closed connection")
+		default:
+		}
+	}
 	if _, err := e.Context.Writer.Write(data); err != nil {
-		log.Printf("Error: stream write error - %v", err)
+		Error.Printf("stream error: write failed: %v", err)
 		return err
 	}
 	return nil
@@ -43,47 +55,45 @@ func (e *StreamSender) writeData(data []byte) error {
 
 // SendMessage 发送普通消息
 func (e *StreamSender) SendMessage(message string) {
-	if e.flusher == nil {
-		log.Printf("Error: stream error - flusher not initialized")
+	if e.Context == nil || e.Context.Writer == nil {
+		Error.Println("stream error: context or writer is nil in SendMessage")
 		return
 	}
-
-	// 优化写入逻辑，减少多次调用
-	data := []byte("data: " + message + "\n\n")
+	data := []byte("event: message\ndata: " + message + "\n\n")
 	if err := e.writeData(data); err != nil {
+		Error.Printf("stream error: SendMessage failed: %v", err)
 		return
 	}
-
 	e.flusher.Flush()
 }
 
 // SendError 发送错误消息
 func (e *StreamSender) SendError(errMsg string) {
-	if e.flusher == nil {
-		log.Printf("Error: stream error - flusher not initialized")
+	if e.Context == nil || e.Context.Writer == nil {
+		Error.Println("stream error: context or writer is nil in SendError")
 		return
 	}
-
-	// 优化写入逻辑，减少多次调用
 	data := []byte("event: error\ndata: " + errMsg + "\n\n")
 	if err := e.writeData(data); err != nil {
+		Error.Printf("stream error: SendError failed: %v", err)
 		return
 	}
-
 	e.flusher.Flush()
 }
 
-// SendDone 结束流式响应
-func (e *StreamSender) SendDone() {
+// Done 结束流式响应
+func (e *StreamSender) Done() {
 	if e.flusher == nil {
-		log.Printf("Error: stream error - flusher not initialized")
+		Error.Println("stream error: flusher not initialized")
 		return
 	}
 
-	// 确保结束时的空行符合标准
-	if err := e.writeData([]byte("\n\n")); err != nil {
+	if _, err := e.Context.Writer.Write([]byte("\n\n")); err != nil {
+		Error.Println("stream error: %v", err)
 		return
 	}
 
 	e.flusher.Flush()
+	e.Context = nil
+	e.flusher = nil
 }
