@@ -1,6 +1,7 @@
 package z
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
@@ -24,11 +25,85 @@ type SendRequestResponse struct {
 	Headers    http.Header
 }
 
+type PostSSEStreamHandler func(response string) error
+
 // GetUrl 生成当前服务器的 URL 地址
 func GetUrl(params string) string {
 	urlCfg, _ := Config.String("_config.url")
 
 	return fmt.Sprintf("%s/%s", strings.Trim(urlCfg, "/"), strings.Trim(params, "/"))
+}
+
+// PostSSEStream 发起 POST 请求，并返回 SSE 流
+func PostSSEStream(
+	url string, data map[string]interface{}, headers map[string]string, streamHandler PostSSEStreamHandler,
+) error {
+	reqBytes, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	// 添加SSE流式请求所需的Accept头
+	headers["Accept"] = "text/event-stream"
+
+	// 发起SSE流式请求
+	resp, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBytes))
+	if err != nil {
+		return err
+	}
+
+	// 设置请求头
+	for key, value := range headers {
+		resp.Header.Set(key, value)
+	}
+
+	// 发送请求
+	client := &http.Client{}
+	response, err := client.Do(resp)
+	if err != nil {
+		return err
+	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(response.Body)
+
+	// 创建bufio.Reader来读取流式数据
+	reader := bufio.NewReader(response.Body)
+
+	// 持续读取SSE数据流
+	for {
+		// 读取一行数据
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		// 跳过空行
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// 处理data前缀
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		// 提取JSON数据
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		err = streamHandler(data)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Post 发起 POST 请求
@@ -59,7 +134,7 @@ func Post(url string, data map[string]interface{}, headers map[string]string) (s
 		_ = res.Body.Close()
 	}()
 
-	body, err := ioutil.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		return "", err
 	}
@@ -268,7 +343,9 @@ func AppendQueryParamsToURL(originalURL string, params map[string]interface{}) (
 }
 
 // Request 发送请求
-func Request(url string, method string, headers map[string]string, paramType string, params map[string]interface{}) (*SendRequestResponse, error) {
+func Request(
+	url string, method string, headers map[string]string, paramType string, params map[string]interface{},
+) (*SendRequestResponse, error) {
 	var req *http.Request
 	var err error
 
