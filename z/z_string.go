@@ -3,6 +3,7 @@ package z
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"regexp"
 	"strconv"
 	"strings"
@@ -111,4 +112,9 @@ func StringToSlice(input string, separators ...string) []string {
 	}
 
 	return result
+}
+
+// GetUUID 获取UUID
+func GetUUID() string {
+	return uuid.New().String()
 }
