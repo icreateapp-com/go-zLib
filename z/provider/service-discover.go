@@ -373,7 +373,7 @@ func (s *serviceDiscoverProvider) Call(name string, request ServiceRequestParam,
 }
 
 // Grpc gRPC 服务
-func (s *serviceDiscoverProvider) Grpc(name string, handler func(*grpc.ClientConn) error) error {
+func (s *serviceDiscoverProvider) Grpc(name string, handler func(*ServiceDiscoverServiceInfo, *grpc.ClientConn) error) error {
 	// 获取服务
 	name = strings.ToLower(name)
 	service, err := ServiceDiscoverProvider.GetBestServiceAddress(name)
@@ -399,5 +399,5 @@ func (s *serviceDiscoverProvider) Grpc(name string, handler func(*grpc.ClientCon
 	}
 	defer conn.Close()
 
-	return handler(conn)
+	return handler(service, conn)
 }

@@ -3,10 +3,12 @@ package z
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/go-playground/validator/v10"
 	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -212,6 +214,92 @@ func GetStructField(s interface{}, fieldName string) (interface{}, bool) {
 	field := elem.FieldByName(fieldName)
 	if field.IsValid() {
 		return field.Interface(), true
+	}
+	return nil, false
+}
+
+// GetValidDataByStruct 验证并修正输入数据
+func GetValidDataByStruct(nodeDataMap map[string]interface{}, nodeDataStruct interface{}) (map[string]interface{}, error) {
+	validate := validator.New()
+
+	stValue := reflect.ValueOf(nodeDataStruct)
+	if stValue.Kind() == reflect.Ptr {
+		if stValue.IsNil() {
+			return nil, fmt.Errorf("nodeDataStruct pointer is nil")
+		}
+		stValue = stValue.Elem()
+	}
+
+	stType := stValue.Type()
+	if stType.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("nodeDataStruct must be a struct or pointer to struct")
+	}
+
+	result := make(map[string]interface{})
+
+	for i := 0; i < stType.NumField(); i++ {
+		field := stType.Field(i)
+
+		// 跳过未导出字段
+		if field.PkgPath != "" {
+			continue
+		}
+
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "-" || jsonTag == "" {
+			continue
+		}
+		jsonName := strings.Split(jsonTag, ",")[0]
+
+		value, exists := nodeDataMap[jsonName]
+		if exists {
+			result[jsonName] = value
+			continue
+		}
+
+		// 使用默认值
+		defaultValue := field.Tag.Get("default")
+		if defaultValue != "" {
+			if converted, ok := ConvertDefaultValue(defaultValue, field.Type.Kind()); ok {
+				result[jsonName] = converted
+			}
+		}
+	}
+
+	// 将 map 转成结构体以进行验证
+	newInstance := reflect.New(stType).Interface()
+	if err := ToStruct(result, newInstance); err != nil {
+		return nil, fmt.Errorf("convert to struct failed: %w", err)
+	}
+
+	if err := validate.Struct(newInstance); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	return result, nil
+}
+
+// ConvertDefaultValue 尝试将字符串默认值转换为指定类型
+func ConvertDefaultValue(str string, kind reflect.Kind) (interface{}, bool) {
+	switch kind {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if val, err := strconv.ParseInt(str, 10, 64); err == nil {
+			return val, true
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if val, err := strconv.ParseUint(str, 10, 64); err == nil {
+			return val, true
+		}
+	case reflect.Float32, reflect.Float64:
+		if val, err := strconv.ParseFloat(str, 64); err == nil {
+			return val, true
+		}
+	case reflect.Bool:
+		if val, err := strconv.ParseBool(str); err == nil {
+			return val, true
+		}
+	case reflect.String:
+		return str, true
 	}
 	return nil, false
 }

@@ -1,6 +1,7 @@
 package z
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -215,4 +216,13 @@ func SplitPath(path string) []string {
 	}
 
 	return parts
+}
+
+// ToMap 将结构体转换为 map
+func ToMap(data interface{}, result interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(jsonData, result)
 }
