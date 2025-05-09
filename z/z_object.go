@@ -185,6 +185,28 @@ func ToFloat64(value interface{}) (float64, bool) {
 	}
 }
 
+// ToInt 将接口转换为 int
+func ToInt(value interface{}) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case string:
+		num, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, false
+		}
+		return num, true
+	default:
+		return 0, false
+	}
+}
+
 // ToBool 将接口转换为 bool
 func ToBool(value interface{}) (bool, bool) {
 	switch v := value.(type) {

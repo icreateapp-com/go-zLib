@@ -30,6 +30,11 @@ func ToString(v interface{}) string {
 	return fmt.Sprintf("%v", v)
 }
 
+// ToInterface 转换为接口
+func ToInterface(s string) interface{} {
+	return s
+}
+
 // ToSnakeCase 驼峰转蛇形
 func ToSnakeCase(str string) string {
 	var snakeCase string

@@ -226,3 +226,21 @@ func ToMap(data interface{}, result interface{}) error {
 	}
 	return json.Unmarshal(jsonData, result)
 }
+
+// IsString 判断a是否为字符串类型
+func IsString(a interface{}) bool {
+	_, ok := a.(string)
+	return ok
+}
+
+// IsScalar 判断输入的 interface{} 是否是标量类型（如 string, int, float64, bool）
+func IsScalar(a interface{}) bool {
+	switch a.(type) {
+	case string, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, bool:
+		return true
+	default:
+		return false
+	}
+}

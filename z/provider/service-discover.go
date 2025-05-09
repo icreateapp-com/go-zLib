@@ -223,7 +223,12 @@ func (s *serviceDiscoverProvider) GetAllServiceAddress(name string) (*[]ServiceD
 	if err != nil {
 		Error.Fatalf("service register failed: %s", err.Error())
 	}
+
+	// 确保地址格式正确
 	address = strings.TrimSuffix(address, "/")
+	if !strings.HasPrefix(address, "http") {
+		address = "http://" + address
+	}
 
 	apikey, err := Config.String("config.service_discover.apikey")
 	if err != nil {
@@ -259,7 +264,12 @@ func (s *serviceDiscoverProvider) GetBestServiceAddress(name string) (*ServiceDi
 	if err != nil {
 		Error.Fatalf("service register failed: %s", err.Error())
 	}
+
+	// 确保地址格式正确
 	address = strings.TrimSuffix(address, "/")
+	if !strings.HasPrefix(address, "http") {
+		address = "http://" + address
+	}
 
 	apikey, err := Config.String("config.service_discover.apikey")
 	if err != nil {
