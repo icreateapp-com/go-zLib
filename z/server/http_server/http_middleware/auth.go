@@ -1,4 +1,4 @@
-package middleware
+package http_middleware
 
 import (
 	"github.com/gin-gonic/gin"
@@ -11,7 +11,7 @@ func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
 		// skip anonymity url
-		if skips, err := Config.StringSlice("config.anonymity"); err == nil {
+		if skips, err := Config.StringSlice("config.http.anonymity"); err == nil {
 			if c.Request.URL.Path == "/" {
 				c.Next()
 				return
@@ -36,7 +36,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		// 获取 auth 配置
-		authConfig, err := Config.StringMap("config.auth")
+		authConfig, err := Config.StringMap("config.http.auth")
 		if err != nil {
 			c.JSON(401, gin.H{"error": "Unauthorized"})
 			c.Abort()

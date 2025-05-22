@@ -1,4 +1,4 @@
-package provider
+package service_discover_provider
 
 import (
 	"encoding/json"
@@ -122,8 +122,8 @@ func (s *serviceDiscoverProvider) registerService() error {
 	}
 
 	name, _ := Config.String("config.name")
-	host, _ := Config.String("config.host")
-	port, _ := Config.Int("config.port")
+	host, _ := Config.String("config.http.host")
+	port, _ := Config.Int("config.http.port")
 	grpcHost, _ := Config.String("config.grpc.host")
 	grpcPort, _ := Config.Int("config.grpc.port")
 
@@ -135,7 +135,7 @@ func (s *serviceDiscoverProvider) registerService() error {
 		grpcHost, _ = GetLocalIP()
 	}
 
-	tokens, err := Config.StringMap("config.auth")
+	tokens, err := Config.StringMap("config.http.auth")
 	if err != nil {
 		return err
 	}
@@ -295,8 +295,8 @@ func (s *serviceDiscoverProvider) GetBestServiceAddress(name string) (*ServiceDi
 	return &response.Message, nil
 }
 
-// Call 调用服务
-func (s *serviceDiscoverProvider) Call(name string, request ServiceRequestParam, response *interface{}) error {
+// HttpCall 调用服务
+func (s *serviceDiscoverProvider) HttpCall(name string, request ServiceRequestParam, response *interface{}) error {
 	// 获取服务
 	name = strings.ToLower(name)
 	service, err := ServiceDiscoverProvider.GetBestServiceAddress(name)
@@ -382,8 +382,8 @@ func (s *serviceDiscoverProvider) Call(name string, request ServiceRequestParam,
 	return nil
 }
 
-// Grpc gRPC 服务
-func (s *serviceDiscoverProvider) Grpc(name string, handler func(*ServiceDiscoverServiceInfo, *grpc.ClientConn) error) error {
+// GrpcCall gRPC 服务
+func (s *serviceDiscoverProvider) GrpcCall(name string, handler func(*ServiceDiscoverServiceInfo, *grpc.ClientConn) error) error {
 	// 获取服务
 	name = strings.ToLower(name)
 	service, err := ServiceDiscoverProvider.GetBestServiceAddress(name)

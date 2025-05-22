@@ -1,13 +1,15 @@
-package z
+package http_server
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/gin-contrib/static"
 	"github.com/gin-gonic/gin"
-	"time"
+	. "github.com/icreateapp-com/go-zLib/z"
 )
 
-func Serve(setup func(engine *gin.Engine), router func(engine *gin.Engine), middles ...gin.HandlerFunc) {
+func HttpServe(setup func(engine *gin.Engine), router func(engine *gin.Engine), middles ...gin.HandlerFunc) error {
 
 	///////////////////////////////////////////////
 	// init system
@@ -47,7 +49,7 @@ func Serve(setup func(engine *gin.Engine), router func(engine *gin.Engine), midd
 	// instance engine
 	engine := gin.New()
 
-	// middleware
+	// grpc_middleware
 	engine.Use(gin.Logger())
 	engine.Use(gin.Recovery())
 	engine.Use(func(c *gin.Context) {
@@ -62,7 +64,7 @@ func Serve(setup func(engine *gin.Engine), router func(engine *gin.Engine), midd
 		c.Next()
 	})
 
-	// custom middleware
+	// custom grpc_middleware
 	engine.Use(middles...)
 
 	// web static directory
@@ -72,7 +74,7 @@ func Serve(setup func(engine *gin.Engine), router func(engine *gin.Engine), midd
 	router(engine)
 
 	// set trusted proxies
-	if _, err := Config.StringSlice("config.trusted_proxies"); err == nil {
+	if _, err := Config.StringSlice("config.http.trusted_proxies"); err == nil {
 		_ = engine.SetTrustedProxies(nil)
 	}
 
@@ -80,10 +82,10 @@ func Serve(setup func(engine *gin.Engine), router func(engine *gin.Engine), midd
 	setup(engine)
 
 	// run app
-	host, _ := Config.String("config.host")
-	port, _ := Config.Int("config.port")
+	host := Config.GetString("config.http.host")
+	port := Config.GetInt("config.http.port")
 
-	if err := engine.Run(fmt.Sprintf("%s:%d", host, port)); err != nil {
-		Error.Fatalln(err.Error())
-	}
+	Info.Printf("http server running at %s:%d\n", host, port)
+
+	return engine.Run(fmt.Sprintf("%s:%d", host, port))
 }

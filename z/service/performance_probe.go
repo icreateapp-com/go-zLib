@@ -9,10 +9,10 @@ import (
 
 // PointExecutionInfo 记录节点的执行时间和内存占用
 type PointExecutionInfo struct {
-	PointID  string
-	Time     time.Time // 执行开始时间（精确到微秒）
-	Duration uint64    // 执行耗时（微秒）
-	Memory   uint64    // 内存占用（字节）
+	PointID  string    `json:"point_id"`
+	Time     time.Time `json:"time"`     // 执行开始时间（精确到微秒）
+	Duration uint64    `json:"duration"` // 执行耗时（微秒）
+	Memory   uint64    `json:"memory"`   // 内存占用（字节）
 }
 
 // PerformanceProbe 记录节点性能数据的对象

@@ -469,3 +469,53 @@ func CreateBinary(params map[string]interface{}) io.Reader {
 	}
 	return bytes.NewBuffer(nil)
 }
+
+// MatchIP 检查给定的客户端 IP 是否匹配允许的 IP 模式（支持通配符 *）
+func MatchIP(clientIP, allowedIP string) bool {
+	// 将允许的 IP 和客户端 IP 转换为字符串切片
+	allowedParts := strings.Split(allowedIP, ".")
+	clientParts := strings.Split(clientIP, ".")
+
+	// 如果两者的点分段数量不同，则直接不匹配
+	if len(allowedParts) != len(clientParts) {
+		return false
+	}
+
+	// 逐段检查匹配情况
+	for i := 0; i < len(allowedParts); i++ {
+		if allowedParts[i] == "*" {
+			continue // 通配符 * 可以匹配任意数字
+		}
+		if allowedParts[i] != clientParts[i] {
+			return false // 当前段不匹配
+		}
+	}
+
+	return true // 所有段都匹配
+}
+
+// IsLocalIP 检查给定的 IP 是否为本地 IP 地址
+func IsLocalIP(ip string) bool {
+	// 检查常见的本地 IP 地址
+	if ip == "127.0.0.1" || ip == "::1" || ip == "0.0.0.0" || ip == "::" {
+		return true
+	}
+
+	// 解析 IP 地址
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return false
+	}
+
+	// 检查是否为本地回环地址
+	if parsedIP.IsLoopback() {
+		return true
+	}
+
+	// 检查是否为本地链路地址（169.254.0.0/16）
+	if ipv4 := parsedIP.To4(); ipv4 != nil && ipv4[0] == 169 && ipv4[1] == 254 {
+		return true
+	}
+
+	return false
+}
