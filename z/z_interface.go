@@ -218,8 +218,8 @@ func SplitPath(path string) []string {
 	return parts
 }
 
-// ToMap 将结构体转换为 map
-func ToMap(data interface{}, result interface{}) error {
+// ToInterface 将结构体转换为 map
+func ToInterface(data interface{}, result interface{}) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return err
