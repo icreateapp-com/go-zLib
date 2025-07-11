@@ -44,7 +44,11 @@ func (valid *valid) T(err error, req interface{}) string {
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		labels[field.Name] = field.Tag.Get("label")
+		label := field.Tag.Get("label")
+		if len(label) == 0 {
+			label = field.Tag.Get("json")
+		}
+		labels[field.Name] = label
 	}
 
 	var errs validator.ValidationErrors

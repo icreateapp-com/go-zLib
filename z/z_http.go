@@ -3,12 +3,12 @@ package z
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -16,260 +16,348 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
-// SendRequestResponse 返回结果结构体
-type SendRequestResponse struct {
-	StatusCode int
-	Body       string
-	Headers    http.Header
+// RequestContentType 定义 HTTP 内容类型
+type RequestContentType string
+
+const (
+	RequestContentTypeJSON      RequestContentType = "application/json"
+	RequestContentTypeForm      RequestContentType = "application/x-www-form-urlencoded"
+	RequestContentTypeMultipart RequestContentType = "multipart/form-data"
+	RequestContentTypeXML       RequestContentType = "application/xml"
+	RequestContentTypeBinary    RequestContentType = "application/octet-stream"
+	RequestContentTypeRaw       RequestContentType = "raw"
+)
+
+// MultipartField 支持普通字段和文件字段
+type MultipartField struct {
+	FileName string    // 文件名，仅在 IsFile 为 true 时生效
+	Reader   io.Reader // 读取内容
+	IsFile   bool      // 是否为文件
 }
 
-type PostSSEStreamHandler func(response string) error
-
-// GetUrl 生成当前服务器的 URL 地址
-func GetUrl(params string) string {
-	urlCfg, _ := Config.String("_config.url")
-
-	return fmt.Sprintf("%s/%s", strings.Trim(urlCfg, "/"), strings.Trim(params, "/"))
+// RequestOptions 请求选项
+type RequestOptions struct {
+	URL         string
+	Method      string
+	Headers     map[string]string
+	ContentType RequestContentType
+	Data        interface{}
+	Timeout     time.Duration
 }
 
-// PostSSEStream 发起 POST 请求，并返回 SSE 流
-func PostSSEStream(
-	url string, data map[string]interface{}, headers map[string]string, streamHandler PostSSEStreamHandler,
-) error {
-	reqBytes, err := json.Marshal(data)
-	if err != nil {
-		return err
+var (
+	defaultClient *http.Client
+	once          sync.Once
+)
+
+// 获取单例 client（复用连接池）
+func getClient() *http.Client {
+	once.Do(func() {
+		defaultClient = &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				IdleConnTimeout:     90 * time.Second,
+				TLSHandshakeTimeout: 10 * time.Second,
+			},
+		}
+	})
+	return defaultClient
+}
+
+// Request 发起请求
+func Request(opt RequestOptions) ([]byte, error) {
+	if opt.Method == "" {
+		opt.Method = http.MethodPost
 	}
-
-	// 添加SSE流式请求所需的Accept头
-	headers["Accept"] = "text/event-stream"
-
-	// 发起SSE流式请求
-	resp, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBytes))
-	if err != nil {
-		return err
+	if opt.Timeout <= 0 {
+		opt.Timeout = 10 * time.Second
 	}
+	headers := make(http.Header)
+	var body io.Reader
 
-	// 设置请求头
-	for key, value := range headers {
-		resp.Header.Set(key, value)
-	}
-
-	// 发送请求
-	client := &http.Client{}
-	response, err := client.Do(resp)
-	if err != nil {
-		return err
-	}
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(response.Body)
-
-	// 创建bufio.Reader来读取流式数据
-	reader := bufio.NewReader(response.Body)
-
-	// 持续读取SSE数据流
-	for {
-		// 读取一行数据
-		line, err := reader.ReadString('\n')
+	// 构造 body 和 headers
+	switch opt.ContentType {
+	case RequestContentTypeJSON:
+		jsonBytes, err := json.Marshal(opt.Data)
 		if err != nil {
-			if err == io.EOF {
-				break
+			return nil, err
+		}
+		body = bytes.NewBuffer(jsonBytes)
+		headers.Set("Content-Type", string(RequestContentTypeJSON))
+
+	case RequestContentTypeForm:
+		form, ok := opt.Data.(map[string]string)
+		if !ok {
+			return nil, errors.New("form content-type requires map[string]string")
+		}
+		values := url.Values{}
+		for k, v := range form {
+			values.Set(k, v)
+		}
+		body = strings.NewReader(values.Encode())
+		headers.Set("Content-Type", string(RequestContentTypeForm))
+
+	case RequestContentTypeMultipart:
+		form, ok := opt.Data.(map[string]MultipartField)
+		if !ok {
+			return nil, errors.New("multipart content-type requires map[string]MultipartField")
+		}
+		var b bytes.Buffer
+		writer := multipart.NewWriter(&b)
+		for key, field := range form {
+			if field.IsFile {
+				part, err := writer.CreateFormFile(key, field.FileName)
+				if err != nil {
+					return nil, err
+				}
+				_, err = io.Copy(part, field.Reader)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				err := writer.WriteField(key, readToString(field.Reader))
+				if err != nil {
+					return nil, err
+				}
 			}
-			return err
 		}
+		writer.Close()
+		body = &b
+		headers.Set("Content-Type", writer.FormDataContentType())
 
-		// 跳过空行
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// 处理data前缀
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		// 提取JSON数据
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-		err = streamHandler(data)
+	case RequestContentTypeXML:
+		xmlBytes, err := xml.Marshal(opt.Data)
 		if err != nil {
-			return err
+			return nil, err
+		}
+		body = bytes.NewBuffer(xmlBytes)
+		headers.Set("Content-Type", string(RequestContentTypeXML))
+
+	case RequestContentTypeBinary:
+		bin, ok := opt.Data.([]byte)
+		if !ok {
+			return nil, errors.New("binary content-type requires []byte")
+		}
+		body = bytes.NewReader(bin)
+		headers.Set("Content-Type", string(RequestContentTypeBinary))
+
+	case RequestContentTypeRaw:
+		switch v := opt.Data.(type) {
+		case string:
+			body = strings.NewReader(v)
+		case []byte:
+			body = bytes.NewReader(v)
+		case io.Reader:
+			body = v
+		default:
+			return nil, errors.New("raw content-type requires string, []byte, or io.Reader")
+		}
+
+	default:
+		return nil, errors.New("unsupported content-type")
+	}
+
+	// 构造请求上下文
+	ctx, cancel := context.WithTimeout(context.Background(), opt.Timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, opt.Method, opt.URL, body)
+	if err != nil {
+		return nil, err
+	}
+
+	// 合并 headers
+	for k, v := range opt.Headers {
+		req.Header.Set(k, v)
+	}
+	for k, vs := range headers {
+		for _, v := range vs {
+			req.Header.Set(k, v) // 防止覆盖用户自定义的 headers
 		}
 	}
 
-	return nil
-}
-
-// Post 发起 POST 请求
-func Post(url string, data map[string]interface{}, headers map[string]string) (string, error) {
-	values := ToValues(data)
-
-	// 创建一个新的 HTTP 请求
-	req, err := http.NewRequest("POST", url, bytes.NewBufferString(values.Encode()))
-	if err != nil {
-		return "", err
-	}
-
-	// 设置默认的 Content-Type
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	// 添加可选的 HTTP 头信息
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-
-	// 发送请求
-	client := &http.Client{}
-	res, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		_ = res.Body.Close()
-	}()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(body), nil
-}
-
-// PostJson 发起 POST JSON 请求
-func PostJson(url string, data map[string]interface{}, headers map[string]string) (string, error) {
-	// 将数据序列化为 JSON 字符串
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return "", err
-	}
-
-	// 创建一个新的 HTTP 请求
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-
-	// 设置默认的 Content-Type
-	req.Header.Set("Content-Type", "application/json")
-
-	// 添加可选的 HTTP 头信息
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-
-	// 发送请求
-	client := &http.Client{}
-	res, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		_ = res.Body.Close()
-	}()
-
-	body, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(body), nil
-}
-
-// Get 发起 GET 请求
-func Get(url string, headers map[string]string) (string, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return "", err
-	}
-
-	// 添加可选的 HTTP 头信息
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-
-	client := &http.Client{}
-	res, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		_ = res.Body.Close()
-	}()
-
-	body, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(body), nil
-}
-
-// Put 发送 PUT 请求
-func Put(url string, data map[string]interface{}, headers map[string]string) (string, error) {
-	values := ToValues(data)
-
-	req, err := http.NewRequest("PUT", url, bytes.NewBufferString(values.Encode()))
-	if err != nil {
-		return "", err
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-	client := &http.Client{}
+	// 发起请求
+	client := getClient()
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	respBody, err := ioutil.ReadAll(resp.Body)
+
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return string(respBody), nil
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("http error: %s\n%s", resp.Status, string(respBody))
+	}
+
+	return respBody, nil
 }
 
-// Delete 发送 DELETE 请求
-func Delete(url string, headers map[string]string) (string, error) {
-	req, err := http.NewRequest("DELETE", url, nil)
+// RequestSSEChannel 发起 SSE 请求，返回一个只读通道供外部消费事件
+func RequestSSEChannel(opt RequestOptions) (<-chan string, <-chan error, context.CancelFunc, error) {
+	if opt.Method == "" {
+		opt.Method = http.MethodGet
+	}
+	if opt.Timeout == 0 {
+		opt.Timeout = 15 * time.Second
+	}
+
+	var body io.Reader
+
+	if opt.Method == http.MethodPost {
+		switch opt.ContentType {
+		case RequestContentTypeJSON:
+			jsonBytes, err := json.Marshal(opt.Data)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			body = bytes.NewBuffer(jsonBytes)
+			if opt.Headers == nil {
+				opt.Headers = make(map[string]string)
+			}
+			opt.Headers["Content-Type"] = string(RequestContentTypeJSON)
+		default:
+			// 如果是其他类型，我们假设 Data 已经是 io.Reader
+			if r, ok := opt.Data.(io.Reader); ok {
+				body = r
+			}
+		}
+	}
+
+	// 创建超时上下文
+	ctx, cancel := context.WithTimeout(context.Background(), opt.Timeout)
+	req, err := http.NewRequestWithContext(ctx, opt.Method, opt.URL, body)
 	if err != nil {
-		return "", err
+		cancel()
+		return nil, nil, nil, err
 	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
+
+	// 添加 headers
+	for k, v := range opt.Headers {
+		req.Header.Set(k, v)
 	}
+	// SSE 必须为 text/event-stream
+	req.Header.Set("Accept", "text/event-stream")
+
 	client := &http.Client{}
+
+	// 发起请求
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		cancel()
+		return nil, nil, nil, err
 	}
-	defer resp.Body.Close()
-	respBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
+	if resp.StatusCode != http.StatusOK {
+		cancel()
+		return nil, nil, nil, errors.New("unexpected status: " + resp.Status)
 	}
-	return string(respBody), nil
+
+	eventChan := make(chan string)
+	errChan := make(chan error, 1)
+
+	// 后台读取流
+	go func() {
+		defer close(eventChan)
+		defer close(errChan)
+		defer resp.Body.Close()
+
+		reader := bufio.NewReader(resp.Body)
+
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err != io.EOF {
+					errChan <- err
+				}
+				return
+			}
+			line = strings.TrimSpace(line)
+			if line == "" || !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			data := strings.TrimPrefix(line, "data:")
+			eventChan <- strings.TrimSpace(data)
+		}
+	}()
+
+	return eventChan, errChan, cancel, nil
 }
 
-// IsUrl 判断是否是有效的URL
-func IsUrl(toTest string) bool {
-	_, err := url.ParseRequestURI(toTest)
-	if err != nil {
-		return false
-	}
+// PostSSEChannel 发起 SSE 流式 POST 请求
+func PostSSEChannel(url string, data interface{}, headers map[string]string) (<-chan string, <-chan error, context.CancelFunc, error) {
+	return RequestSSEChannel(RequestOptions{
+		URL:         url,
+		Method:      http.MethodPost,
+		ContentType: RequestContentTypeJSON,
+		Data:        data,
+		Headers:     headers,
+	})
+}
 
-	u, err := url.Parse(toTest)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return false
-	}
+// GetSSEChannel 发起 SSE 流式 GET 请求
+func GetSSEChannel(url string, headers map[string]string) (<-chan string, <-chan error, context.CancelFunc, error) {
+	return RequestSSEChannel(RequestOptions{
+		URL:     url,
+		Method:  http.MethodGet,
+		Headers: headers,
+	})
+}
 
-	return true
+// 读取流为字符串（用于 Multipart 普通字段）
+func readToString(r io.Reader) string {
+	if r == nil {
+		return ""
+	}
+	b, _ := io.ReadAll(r)
+	return string(b)
+}
+
+// Get 请求
+func Get(url string, headers map[string]string) ([]byte, error) {
+	return Request(RequestOptions{
+		URL:     url,
+		Method:  http.MethodGet,
+		Headers: headers,
+	})
+}
+
+// Post 提交
+func Post(url string, data interface{}, headers map[string]string, contentType RequestContentType) ([]byte, error) {
+	return Request(RequestOptions{
+		URL:         url,
+		Method:      http.MethodPost,
+		Headers:     headers,
+		Data:        data,
+		ContentType: contentType,
+	})
+}
+
+// Put 修改
+func Put(url string, data interface{}, headers map[string]string, contentType RequestContentType) ([]byte, error) {
+	return Request(RequestOptions{
+		URL:         url,
+		Method:      http.MethodPut,
+		Headers:     headers,
+		Data:        data,
+		ContentType: contentType,
+	})
+}
+
+// Delete 删除
+func Delete(url string, headers map[string]string) ([]byte, error) {
+	return Request(RequestOptions{
+		URL:     url,
+		Method:  http.MethodDelete,
+		Headers: headers,
+	})
 }
 
 // Download 下载文件
@@ -306,6 +394,28 @@ func Download(url string, filePath string) error {
 	return nil
 }
 
+// GetUrl 生成当前服务器的 URL 地址
+func GetUrl(params string) string {
+	urlCfg, _ := Config.String("_config.url")
+
+	return fmt.Sprintf("%s/%s", strings.Trim(urlCfg, "/"), strings.Trim(params, "/"))
+}
+
+// IsUrl 判断是否是有效的URL
+func IsUrl(toTest string) bool {
+	_, err := url.ParseRequestURI(toTest)
+	if err != nil {
+		return false
+	}
+
+	u, err := url.Parse(toTest)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+
+	return true
+}
+
 // GetLocalIP 获取本地 IP 地址
 func GetLocalIP() (string, error) {
 	addrs, err := net.InterfaceAddrs()
@@ -340,134 +450,6 @@ func AppendQueryParamsToURL(originalURL string, params map[string]interface{}) (
 	parsedURL.RawQuery = queryValues.Encode()
 
 	return parsedURL.String(), nil
-}
-
-// Request 发送请求
-func Request(
-	url string, method string, headers map[string]string, paramType string, params map[string]interface{},
-) (*SendRequestResponse, error) {
-	var req *http.Request
-	var err error
-
-	// 创建请求体
-	var body io.Reader
-	switch strings.ToLower(paramType) {
-	case "form-data":
-		body, err = CreateFormData(params)
-	case "x-www-form-urlencoded":
-		body, err = CreateFormURLEncoded(params)
-	case "json":
-		body, err = CreateJSON(params)
-	case "xml":
-		body, err = CreateXML(params)
-	case "raw":
-		body = CreateRaw(params)
-	case "binary":
-		body = CreateBinary(params)
-	default:
-		return nil, fmt.Errorf("unsupported param type: %s", paramType)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request body: %w", err)
-	}
-
-	// 创建请求
-	req, err = http.NewRequest(strings.ToUpper(method), url, body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// 设置请求头
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-
-	// 发送请求
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// 读取响应
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// 构建返回结果
-	response := &SendRequestResponse{
-		StatusCode: resp.StatusCode,
-		Body:       string(respBody),
-		Headers:    resp.Header,
-	}
-
-	return response, nil
-}
-
-// CreateFormData 创建 Form-Data 请求体
-func CreateFormData(params map[string]interface{}) (io.Reader, error) {
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	for key, value := range params {
-		if err := writer.WriteField(key, ToString(value)); err != nil {
-			return nil, fmt.Errorf("failed to write form field %s: %w", key, err)
-		}
-	}
-
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close form writer: %w", err)
-	}
-
-	return body, nil
-}
-
-// CreateFormURLEncoded 创建 x-www-form-urlencoded 请求体
-func CreateFormURLEncoded(params map[string]interface{}) (io.Reader, error) {
-	values := url.Values{}
-	for key, value := range params {
-		values.Add(key, ToString(value))
-	}
-	return strings.NewReader(values.Encode()), nil
-}
-
-// CreateJSON 创建 JSON 请求体
-func CreateJSON(params map[string]interface{}) (io.Reader, error) {
-	jsonData, err := json.Marshal(params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal JSON: %w", err)
-	}
-	return bytes.NewBuffer(jsonData), nil
-}
-
-// CreateXML 创建 XML 请求体
-func CreateXML(params map[string]interface{}) (io.Reader, error) {
-	xmlData, err := xml.Marshal(params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal XML: %w", err)
-	}
-	return bytes.NewBuffer(xmlData), nil
-}
-
-// CreateRaw 创建 Raw 请求体
-func CreateRaw(params map[string]interface{}) io.Reader {
-	// 假设 params 是一个包含 raw 数据的 map
-	if raw, ok := params["raw"].(string); ok {
-		return strings.NewReader(raw)
-	}
-	return strings.NewReader("")
-}
-
-// CreateBinary 创建 Binary 请求体
-func CreateBinary(params map[string]interface{}) io.Reader {
-	// 假设 params 是一个包含 binary 数据的 map
-	if binary, ok := params["binary"].([]byte); ok {
-		return bytes.NewBuffer(binary)
-	}
-	return bytes.NewBuffer(nil)
 }
 
 // MatchIP 检查给定的客户端 IP 是否匹配允许的 IP 模式（支持通配符 *）

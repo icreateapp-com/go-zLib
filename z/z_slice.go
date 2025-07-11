@@ -65,9 +65,9 @@ func SortMapSlice(data []map[string]interface{}, field string, ascending bool) {
 }
 
 // InSlice 检查某个元素是否存在于切片中
-func InSlice(target string, slice []string) bool {
-	for _, item := range slice {
-		if item == target {
+func InSlice[T comparable](val T, list []T) bool {
+	for _, v := range list {
+		if v == val {
 			return true
 		}
 	}

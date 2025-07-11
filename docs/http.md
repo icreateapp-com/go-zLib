@@ -46,7 +46,7 @@ response, err := z.Get("https://api.example.com/users", headers)
 
 #### 返回值
 
-- (string, error): 响应内容字符串和可能的错误
+- ([]byte, error): 响应内容字节数组和可能的错误
 
 ### POST 请求
 
@@ -60,7 +60,7 @@ data := map[string]interface{}{
     "username": "zhangsan",
     "password": "123456",
 }
-response, err := z.Post("https://api.example.com/login", data, nil)
+response, err := z.Post("https://api.example.com/login", data, nil, z.RequestContentTypeForm)
 ```
 
 #### 参数说明
@@ -70,10 +70,11 @@ response, err := z.Post("https://api.example.com/login", data, nil)
 | url | string | 是 | 请求 URL |
 | data | map[string]interface{} | 否 | 表单数据 |
 | headers | map[string]string | 否 | 请求头信息 |
+| contentType | RequestContentType | 是 | 请求内容类型 |
 
 #### 返回值
 
-- (string, error): 响应内容字符串和可能的错误
+- ([]byte, error): 响应内容字节数组和可能的错误
 
 #### JSON 数据 POST
 
@@ -87,7 +88,7 @@ data := map[string]interface{}{
         "email": "zhangsan@example.com",
     },
 }
-response, err := z.PostJson("https://api.example.com/login", data, nil)
+response, err := z.Post("https://api.example.com/login", data, nil, z.RequestContentTypeJSON)
 ```
 
 #### 参数说明
@@ -97,10 +98,11 @@ response, err := z.PostJson("https://api.example.com/login", data, nil)
 | url | string | 是 | 请求 URL |
 | data | map[string]interface{} | 否 | JSON 数据 |
 | headers | map[string]string | 否 | 请求头信息 |
+| contentType | RequestContentType | 是 | 请求内容类型 |
 
 #### 返回值
 
-- (string, error): 响应内容字符串和可能的错误
+- ([]byte, error): 响应内容字节数组和可能的错误
 
 ### PUT 请求
 
@@ -112,7 +114,7 @@ data := map[string]interface{}{
     "username": "lisi",
     "email": "lisi@example.com",
 }
-response, err := z.Put("https://api.example.com/users/1", data, nil)
+response, err := z.Put("https://api.example.com/users/1", data, nil, z.RequestContentTypeJSON)
 ```
 
 #### 参数说明
@@ -120,12 +122,13 @@ response, err := z.Put("https://api.example.com/users/1", data, nil)
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | url | string | 是 | 请求 URL |
-| data | map[string]interface{} | 否 | 表单数据 |
+| data | map[string]interface{} | 否 | 请求数据 |
 | headers | map[string]string | 否 | 请求头信息 |
+| contentType | RequestContentType | 是 | 请求内容类型 |
 
 #### 返回值
 
-- (string, error): 响应内容字符串和可能的错误
+- ([]byte, error): 响应内容字节数组和可能的错误
 
 ### DELETE 请求
 
@@ -145,7 +148,7 @@ response, err := z.Delete("https://api.example.com/users/1", nil)
 
 #### 返回值
 
-- (string, error): 响应内容字符串和可能的错误
+- ([]byte, error): 响应内容字节数组和可能的错误
 
 ## 高级功能
 
@@ -194,13 +197,13 @@ if err != nil {
 
 ```go
 // 发送通用请求
-response, err := z.Request(
-    "https://api.example.com/users",
-    "GET",
-    map[string]string{"Authorization": "Bearer token123"},
-    "json",  // 参数类型：json, form, xml, raw, binary, form-data
-    map[string]interface{}{"page": 1, "size": 10},
-)
+response, err := z.Request(z.RequestOptions{
+    URL:     "https://api.example.com/users",
+    Method:  "GET",
+    Headers: map[string]string{"Authorization": "Bearer token123"},
+    ContentType: z.RequestContentTypeJSON,
+    Data:    map[string]interface{}{"page": 1, "size": 10},
+})
 if err != nil {
     // 处理错误
 }
@@ -208,7 +211,7 @@ if err != nil {
 // 获取响应状态码
 fmt.Println("状态码:", response.StatusCode)
 // 获取响应内容
-fmt.Println("响应内容:", response.Body)
+fmt.Println("响应内容:", string(response.Body))
 // 获取响应头
 fmt.Println("响应头:", response.Headers.Get("Content-Type"))
 ```
@@ -217,25 +220,11 @@ fmt.Println("响应头:", response.Headers.Get("Content-Type"))
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| url | string | 是 | 请求 URL |
-| method | string | 是 | 请求方法 (GET, POST, PUT, DELETE 等) |
-| headers | map[string]string | 否 | 请求头信息 |
-| paramType | string | 是 | 参数类型 (json, form, xml, raw, binary, form-data) |
-| params | map[string]interface{} | 否 | 请求参数 |
+| options | RequestOptions | 是 | 请求选项 |
 
 #### 返回值
 
-- (*SendRequestResponse, error): 响应对象和可能的错误
-
-#### SendRequestResponse 结构
-
-```go
-type SendRequestResponse struct {
-    StatusCode int         // HTTP 状态码
-    Body       string      // 响应内容
-    Headers    http.Header // 响应头
-}
-```
+- ([]byte, error): 响应内容字节数组和可能的错误
 
 ### 文件下载
 
@@ -342,4 +331,41 @@ fmt.Println("本地 IP:", ip)
 
 #### 返回值
 
-- (string, error): 本地 IP 地址和可能的错误 
+- (string, error): 本地 IP 地址和可能的错误
+
+#### 检查客户端 IP 是否匹配允许的 IP 模式
+
+```go
+// 检查客户端 IP 是否匹配允许的 IP 模式
+match := z.MatchIP("192.168.1.100", "192.168.1.*")
+// 返回: true
+```
+
+#### 参数说明
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| clientIP | string | 是 | 客户端 IP 地址 |
+| allowedIP | string | 是 | 允许的 IP 模式 |
+
+#### 返回值
+
+- bool: IP 是否匹配
+
+#### 检查给定的 IP 是否为本地 IP 地址
+
+```go
+// 检查给定的 IP 是否为本地 IP 地址
+isLocal := z.IsLocalIP("127.0.0.1")
+// 返回: true
+```
+
+#### 参数说明
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| ip | string | 是 | 要检查的 IP 地址 |
+
+#### 返回值
+
+- bool: 是否为本地 IP 地址
