@@ -7,6 +7,7 @@ import (
 	"github.com/gin-contrib/static"
 	"github.com/gin-gonic/gin"
 	. "github.com/icreateapp-com/go-zLib/z"
+	"github.com/icreateapp-com/go-zLib/z/server/http_server/http_middleware"
 )
 
 func HttpServe(setup func(engine *gin.Engine), router func(engine *gin.Engine), middles ...gin.HandlerFunc) error {
@@ -51,7 +52,8 @@ func HttpServe(setup func(engine *gin.Engine), router func(engine *gin.Engine), 
 
 	// grpc_middleware
 	engine.Use(gin.Logger())
-	engine.Use(gin.Recovery())
+	engine.Use(http_middleware.ErrorTrackerMiddleware()) // 错误跟踪中间件
+	engine.Use(http_middleware.ErrorLogMiddleware())     // 错误日志中间件
 	engine.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")

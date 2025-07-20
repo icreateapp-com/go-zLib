@@ -14,8 +14,8 @@ type redisCache struct {
 
 var RedisCache redisCache
 
-// New 初始化 redis
-func (r *redisCache) New() {
+// Init 初始化 redis
+func (r *redisCache) Init() {
 	host, _ := Config.String("config.redis.host")
 	port, _ := Config.Int("config.redis.port")
 	password, _ := Config.String("config.redis.password")

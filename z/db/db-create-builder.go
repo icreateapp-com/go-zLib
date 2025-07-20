@@ -2,22 +2,21 @@ package db
 
 import "gorm.io/gorm"
 
-type CreateBuilder struct {
-	Model interface{}
-	TX    *gorm.DB
+type CreateBuilder[T IModel] struct {
+	TX *gorm.DB
 }
 
-func (q CreateBuilder) Create(values interface{}) (interface{}, error) {
-	// db
+func (q CreateBuilder[T]) Create(values T) (T, error) {
+	var zero T
 	var db *gorm.DB
 	if q.TX != nil {
-		db = q.TX
+		db = q.TX.Model(&zero)
 	} else {
-		db = DB.Model(q.Model)
+		db = DB.Model(&zero)
 	}
 
-	if err := db.Create(values).Error; err != nil {
-		return nil, err
+	if err := db.Create(&values).Error; err != nil {
+		return zero, err
 	}
 
 	return values, nil

@@ -2,13 +2,14 @@ package db
 
 import (
 	"database/sql"
-	"github.com/icreateapp-com/go-zLib/z"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 	"log"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/icreateapp-com/go-zLib/z"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type db struct {
@@ -17,8 +18,8 @@ type db struct {
 
 var DB db
 
-// New 初始化
-func (db *db) New() *db {
+// Init 初始化
+func (db *db) Init() *db {
 
 	if db.DB != nil {
 		return db
@@ -66,7 +67,7 @@ func (db *db) New() *db {
 	return db
 }
 
-// Transaction 事务
+// Transaction 事务装饰器 - 自动管理事务生命周期
 func (db *db) Transaction(fc func(tx *gorm.DB) error, opts ...*sql.TxOptions) error {
 	return db.DB.Transaction(fc, opts...)
 }

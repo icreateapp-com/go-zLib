@@ -118,3 +118,22 @@ func SliceUnique[T comparable](slice []T) []T {
 	}
 	return result
 }
+
+// JoinStringSlice 将字符串切片连接为逗号分隔的引用字符串
+func JoinStringSlice(strs []string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+
+	quoted := make([]string, len(strs))
+	for i, str := range strs {
+		quoted[i] = fmt.Sprintf(`"%s"`, str)
+	}
+
+	// 用逗号连接所有引用的字符串
+	result := quoted[0]
+	for i := 1; i < len(quoted); i++ {
+		result += ", " + quoted[i]
+	}
+	return result
+}

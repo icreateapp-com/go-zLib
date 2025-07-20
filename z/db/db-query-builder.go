@@ -3,401 +3,258 @@ package db
 import (
 	"errors"
 	"fmt"
-	"github.com/icreateapp-com/go-zLib/z"
+
 	"gorm.io/gorm"
-	"strings"
 )
 
-type ConditionGroup struct {
-	Conditions [][]interface{} `json:"conditions"`
-	Operator   string          `json:"operator"`
+// 默认分页配置
+const (
+	DefaultPage     = 1
+	DefaultPageSize = 10
+)
+
+// QueryBuilder 查询构建器
+type QueryBuilder[T IModel] struct {
+	TX *gorm.DB
 }
 
-type PageInfo struct {
-	Total       int                      `json:"total"`
-	CurrentPage int                      `json:"current_page"`
-	LastPage    int                      `json:"last_page"`
-	Data        []map[string]interface{} `json:"data"`
-}
-
+// Query 查询参数
 type Query struct {
 	Filter   []string         `json:"filter"`
 	Search   []ConditionGroup `json:"search"`
-	OrderBy  [][]string       `json:"orderby"`
+	OrderBy  []string         `json:"order_by"`
 	Limit    []int            `json:"limit"`
 	Page     []int            `json:"page"`
-	Include  []string         `json:"include"`
-	Required []string         `json:"-"`
+	Required []string         `json:"required"`
 }
 
-type QueryBuilder struct {
-	Model interface{}
+// ConditionGroup 条件组
+type ConditionGroup [][]interface{}
+
+// Pager 分页信息
+type Pager struct {
+	Page     int `json:"page"`
+	PageSize int `json:"page_size"`
+	Total    int `json:"total"`
+	LastPage int `json:"last_page"`
 }
 
-func (q QueryBuilder) Get(query Query) ([]map[string]interface{}, error) {
-	// define result
-	var ResultFields []map[string]interface{}
+// PaginatedResult 分页结果
+type PaginatedResult[T IModel] struct {
+	Data  []T   `json:"data"`
+	Pager Pager `json:"pager"`
+}
 
-	// db
-	db, err := q.ParseQuery(query, &ResultFields)
+// getDB 获取数据库连接（支持事务）
+func (q QueryBuilder[T]) getDB() *gorm.DB {
+	if q.TX != nil {
+		return q.TX
+	}
+	return DB.DB
+}
+
+// Get 查询多条记录
+func (q QueryBuilder[T]) Get(query Query) ([]T, error) {
+	var results []T
+
+	parser := QueryParser[T]{TX: q.TX}
+	db := q.getDB().Model(new(T))
+
+	parsedDB, err := parser.ParseQuery(query, db)
 	if err != nil {
 		return nil, err
 	}
 
-	// find rows
-	if err := db.Find(&ResultFields).Error; err != nil {
+	if err := parsedDB.Find(&results).Error; err != nil {
 		return nil, err
 	}
 
-	// process time fields
-	for i, _ := range ResultFields {
-		z.FormatTimeInMap(ResultFields[i])
-	}
-
-	return ResultFields, nil
+	return results, nil
 }
 
-func (q QueryBuilder) Page(query Query) (PageInfo, error) {
-	pager := PageInfo{
-		Total:       0,
-		CurrentPage: 1,
-		LastPage:    1,
-		Data:        []map[string]interface{}{},
-	}
+// Page 查询多条记录（带分页）
+func (q QueryBuilder[T]) Page(query Query) (*PaginatedResult[T], error) {
+	var results []T
 
-	// set page info
+	// 设置默认分页
 	if len(query.Page) == 0 {
-		query.Page = []int{1, 10}
-	} else if len(query.Page) == 1 {
-		query.Page = append(query.Page, 10)
+		query.Page = []int{DefaultPage, DefaultPageSize}
 	}
 
-	// define result
-	var ResultFields []map[string]interface{}
+	parser := QueryParser[T]{TX: q.TX}
+	db := q.getDB().Model(new(T))
 
-	// db
-	db, err := q.ParseQuery(query, &ResultFields)
-	if err != nil {
-		return pager, err
-	}
-
-	// get total count
-	count, err := QueryBuilder{Model: q.Model}.Count(query.Search)
-	if err != nil {
-		return pager, err
-	}
-
-	// get data
-	if err := db.Find(&ResultFields).Error; err != nil {
-		return pager, err
-	}
-
-	// process time fields
-	for i, _ := range ResultFields {
-		z.FormatTimeInMap(ResultFields[i])
-	}
-
-	// calculate page info
-	pager.Total = count
-	pager.CurrentPage = query.Page[0]
-	pager.LastPage = count/query.Page[1] + 1
-	pager.Data = ResultFields
-
-	return pager, nil
-}
-
-func (q QueryBuilder) Find(query Query) (map[string]interface{}, error) {
-	query.Limit = []int{0, 1}
-
-	rows, err := q.Get(query)
+	// 先获取总数（不包含分页）
+	countDB, err := parser.ParseQuery(Query{
+		Filter:   query.Filter,
+		Search:   query.Search,
+		Required: query.Required,
+	}, db)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(rows) > 0 {
-		return rows[0], nil
-	} else {
-		return nil, nil
+	var total int64
+	if err := countDB.Count(&total).Error; err != nil {
+		return nil, err
 	}
+
+	// 再获取分页数据
+	dataDB, err := parser.ParseQuery(query, q.getDB().Model(new(T)))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := dataDB.Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	// 计算分页信息
+	page := query.Page[0]
+	pageSize := query.Page[1]
+	lastPage := int((total + int64(pageSize) - 1) / int64(pageSize)) // 修复分页计算
+	if lastPage == 0 {
+		lastPage = 1
+	}
+
+	pager := Pager{
+		Page:     page,
+		PageSize: pageSize,
+		Total:    int(total),
+		LastPage: lastPage,
+	}
+
+	return &PaginatedResult[T]{
+		Data:  results,
+		Pager: pager,
+	}, nil
 }
 
-func (q QueryBuilder) FindById(id interface{}, query Query) (map[string]interface{}, error) {
-	// set id search
-	query.Search = append(query.Search, ConditionGroup{
-		Conditions: [][]interface{}{{"id", id}},
-	})
+// First 查询单条记录
+func (q QueryBuilder[T]) First(query Query) (*T, error) {
+	var result T
 
-	return q.Find(query)
+	parser := QueryParser[T]{TX: q.TX}
+	db := q.getDB().Model(new(T))
+
+	parsedDB, err := parser.ParseQuery(query, db)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := parsedDB.First(&result).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+
+	return &result, nil
 }
 
-func (q QueryBuilder) Count(search []ConditionGroup) (int, error) {
+// Find 使用主键查找记录
+func (q QueryBuilder[T]) Find(id interface{}, query Query) (*T, error) {
+	var result T
 
-	// define result
-	var ResultFields []map[string]interface{}
+	// 将 ID 条件添加到查询中
+	if query.Search == nil {
+		query.Search = []ConditionGroup{}
+	}
 
-	db, err := q.ParseQuery(Query{Search: search}, &ResultFields)
+	// 添加 ID 查询条件
+	idCondition := ConditionGroup{{"id", id, "="}}
+	query.Search = append(query.Search, idCondition)
+
+	parser := QueryParser[T]{TX: q.TX}
+	db := q.getDB().Model(new(T))
+
+	parsedDB, err := parser.ParseQuery(query, db)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := parsedDB.First(&result).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+
+	return &result, nil
+}
+
+// Count 统计记录数量
+func (q QueryBuilder[T]) Count(query Query) (int64, error) {
+	parser := QueryParser[T]{TX: q.TX}
+	db := q.getDB().Model(new(T))
+
+	// 只解析搜索条件，不需要排序、分页等
+	countQuery := Query{
+		Filter:   query.Filter,
+		Search:   query.Search,
+		Required: query.Required,
+	}
+
+	parsedDB, err := parser.ParseQuery(countQuery, db)
 	if err != nil {
 		return 0, err
 	}
 
 	var count int64
-	if err := db.Count(&count).Error; err != nil {
+	if err := parsedDB.Count(&count).Error; err != nil {
 		return 0, err
 	}
 
-	return int(count), nil
+	return count, nil
 }
 
-func (q QueryBuilder) SUM(field string, search []ConditionGroup) (float64, error) {
+// Sum 计算字段总和
+func (q QueryBuilder[T]) Sum(field string, query Query) (float64, error) {
+	parser := QueryParser[T]{TX: q.TX}
 
-	// define result
-	var ResultFields []map[string]interface{}
+	// 验证字段名安全性
+	if !parser.isValidFieldName(field) {
+		return 0, errors.New("invalid field name: " + field)
+	}
 
-	db, err := q.ParseQuery(Query{Search: search}, &ResultFields)
+	db := q.getDB().Model(new(T))
+
+	// 只解析搜索条件
+	sumQuery := Query{
+		Filter:   query.Filter,
+		Search:   query.Search,
+		Required: query.Required,
+	}
+
+	parsedDB, err := parser.ParseQuery(sumQuery, db)
 	if err != nil {
 		return 0, err
 	}
 
 	var sum float64
-	if err := db.Select(fmt.Sprintf("SUM(%s) as sum", DB.F(field))).Row().Scan(&sum); err != nil {
+	if err := parsedDB.Select(fmt.Sprintf("COALESCE(SUM(%s), 0) as sum", DB.F(field))).Row().Scan(&sum); err != nil {
 		return 0, err
 	}
 
 	return sum, nil
 }
 
-func (q QueryBuilder) Exists(search []ConditionGroup) (bool, error) {
-	count, err := q.Count(search)
+// Exists 检查记录是否存在
+func (q QueryBuilder[T]) Exists(query Query) (bool, error) {
+	count, err := q.Count(query)
 	if err != nil {
 		return false, err
 	}
 
-	return count > 0, err
+	return count > 0, nil
 }
 
-func (q QueryBuilder) ExistsById(id interface{}) (bool, error) {
-	return q.Exists([]ConditionGroup{{Conditions: [][]interface{}{{"id", id}}}})
-}
-
-func (q QueryBuilder) ParseQuery(query Query, ResultFields *[]map[string]interface{}) (*gorm.DB, error) {
-	// db
-	db := DB.Model(q.Model)
-
-	// parse filter fields
-	db, rows, err := q.ParseFilter(db, query.Filter)
-	if err != nil {
-		return nil, err
+// ExistsById 通过主键检查记录是否存在
+func (q QueryBuilder[T]) ExistsById(id interface{}) (bool, error) {
+	query := Query{
+		Search: []ConditionGroup{
+			{{"id", id}},
+		},
 	}
-	ResultFields = &rows
-
-	// parse where clause
-	if db, err = q.ParseSearch(db, query.Search, query.Required); err != nil {
-		return nil, err
-	}
-
-	// parse order by
-	if db, err = q.ParseOrderBy(db, query.OrderBy); err != nil {
-		return nil, err
-	}
-
-	// parse limit
-	if db, err = q.ParseLimit(db, query.Limit); err != nil {
-		return nil, err
-	}
-
-	// parse page
-	if db, err = q.ParsePage(db, query.Page); err != nil {
-		return nil, err
-	}
-
-	return db, nil
-}
-
-func (q QueryBuilder) ParseFilter(db *gorm.DB, filter []string) (*gorm.DB, []map[string]interface{}, error) {
-	var rows []map[string]interface{}
-	var selectFields []string
-
-	if len(filter) == 0 {
-		selectFields = []string{"*"}
-	} else {
-		for _, f := range filter {
-			f = DB.F(f)
-			selectFields = append(selectFields, f)
-			for i, _ := range rows {
-				rows[i][f] = nil
-			}
-		}
-	}
-
-	db = db.Select(strings.Join(selectFields, ", "))
-
-	return db, rows, nil
-}
-
-func (q QueryBuilder) ParseSearch(db *gorm.DB, groups []ConditionGroup, required []string) (*gorm.DB, error) {
-	// 检查 required 字段是否在 Search 中
-	if len(required) > 0 {
-		requiredFields := make(map[string]bool)
-		for _, field := range required {
-			requiredFields[field] = false
-		}
-
-		for _, group := range groups {
-			for _, condition := range group.Conditions {
-				if len(condition) < 2 {
-					return nil, errors.New("invalid condition: each condition must have at least 2 elements")
-				}
-
-				field := condition[0].(string)
-				if _, exists := requiredFields[field]; exists {
-					requiredFields[field] = true
-				}
-			}
-		}
-
-		for field, found := range requiredFields {
-			if !found {
-				return nil, fmt.Errorf("required field '%s' is missing in search conditions", field)
-			}
-		}
-	}
-
-	var conditions []string
-	var values []interface{}
-
-	for _, group := range groups {
-		var groupConditions []string
-
-		for _, condition := range group.Conditions {
-			if len(condition) < 2 {
-				return nil, errors.New("invalid condition: each condition must have at least 2 elements")
-			}
-
-			field := condition[0].(string)
-			value := condition[1]
-
-			var operator string
-			if len(condition) == 3 {
-				operator = condition[2].(string)
-			} else {
-				operator = "="
-			}
-
-			// Validate operator
-			validOperators := map[string]bool{
-				"=":           true,
-				"!=":          true,
-				">":           true,
-				"<":           true,
-				">=":          true,
-				"<=":          true,
-				"like":        true,
-				"left like":   true,
-				"right like":  true,
-				"not like":    true,
-				"in":          true,
-				"not in":      true,
-				"between":     true,
-				"not between": true,
-			}
-			if !validOperators[operator] {
-				return nil, errors.New(fmt.Sprintf("invalid operator: '%s' is not a valid operator", operator))
-			}
-
-			// Handle like operators
-			switch operator {
-			case "like":
-				value = "%" + value.(string) + "%"
-				operator = "like"
-			case "left like":
-				value = "%" + value.(string)
-				operator = "like"
-			case "right like":
-				value = value.(string) + "%"
-				operator = "like"
-			}
-
-			field = DB.F(field)
-
-			groupConditions = append(groupConditions, fmt.Sprintf("%s %s ?", field, operator))
-			values = append(values, value)
-		}
-
-		if len(groupConditions) == 0 {
-			continue
-		}
-
-		if group.Operator == "" {
-			group.Operator = "AND"
-		}
-
-		// Combine conditions within the group
-		groupClause := strings.Join(groupConditions, " "+group.Operator+" ")
-		conditions = append(conditions, fmt.Sprintf("(%s)", groupClause))
-	}
-
-	if len(conditions) == 0 {
-		return db, nil
-	}
-
-	// Combine all group conditions with AND
-	whereClause := strings.Join(conditions, " AND ")
-
-	db = db.Where(whereClause, values...)
-
-	return db, nil
-}
-
-func (q QueryBuilder) ParseOrderBy(db *gorm.DB, order [][]string) (*gorm.DB, error) {
-	if len(order) == 0 && z.HasField(q.Model, "CreatedAt") {
-		order = [][]string{{"created_at", "asc"}}
-	}
-	for _, o := range order {
-		if len(o) == 1 {
-			// If only one element, use "asc" as the default direction
-			o = append(o, "asc")
-		} else if len(o) != 2 {
-			return nil, errors.New("invalid order condition: each order condition must have exactly 1 or 2 elements")
-		}
-
-		field := DB.F(o[0])
-		direction := o[1]
-
-		// Validate direction
-		validDirections := map[string]bool{"asc": true, "desc": true}
-		if !validDirections[direction] {
-			return nil, errors.New(fmt.Sprintf("invalid order direction: '%s' is not a valid direction", direction))
-		}
-
-		// Generate order clause
-		orderClause := fmt.Sprintf("%s %s", field, direction)
-		db = db.Order(orderClause)
-	}
-
-	return db, nil
-}
-
-func (q QueryBuilder) ParseLimit(db *gorm.DB, limit []int) (*gorm.DB, error) {
-	if len(limit) == 2 {
-		db = db.Offset(limit[0]).Limit(limit[1])
-	} else if len(limit) == 1 {
-		db = db.Limit(limit[0])
-	} else if len(limit) > 2 {
-		return nil, errors.New("limit must have at most 2 elements")
-	}
-
-	return db, nil
-}
-
-func (q QueryBuilder) ParsePage(db *gorm.DB, page []int) (*gorm.DB, error) {
-	if len(page) != 2 {
-		return db, nil
-	}
-
-	offset := (page[0] - 1) * page[1]
-	limit := page[1]
-
-	db = db.Offset(offset).Limit(limit)
-
-	return db, nil
+	return q.Exists(query)
 }

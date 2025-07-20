@@ -6,6 +6,7 @@ import (
 	"time"
 
 	. "github.com/icreateapp-com/go-zLib/z"
+	"github.com/icreateapp-com/go-zLib/z/server/grpc_server/grpc_middleware"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -57,11 +58,17 @@ func GrpcServer(registerServices func(*grpc.Server), interceptors ...grpc.UnaryS
 	// 创建服务器选项
 	var serverOptions []grpc.ServerOption
 
-	// 如果有拦截器，添加到服务器选项
-	if len(interceptors) > 0 {
-		// 使用 grpc 自带的 ChainUnaryInterceptor 来链接多个拦截器
-		serverOptions = append(serverOptions, grpc.ChainUnaryInterceptor(interceptors...))
+	// 添加默认的错误跟踪中间件
+	defaultInterceptors := []grpc.UnaryServerInterceptor{
+		grpc_middleware.RecoveryMiddleware,     // 恢复中间件
+		grpc_middleware.ErrorTrackerMiddleware, // 错误跟踪中间件
 	}
+
+	// 合并用户提供的拦截器
+	allInterceptors := append(defaultInterceptors, interceptors...)
+
+	// 使用 grpc 自带的 ChainUnaryInterceptor 来链接多个拦截器
+	serverOptions = append(serverOptions, grpc.ChainUnaryInterceptor(allInterceptors...))
 
 	// 创建 gRPC 服务器实例
 	grpcServer := grpc.NewServer(serverOptions...)

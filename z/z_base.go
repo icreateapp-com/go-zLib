@@ -8,8 +8,8 @@ import (
 // BasePath 返回项目目录绝对路径
 func BasePath() string {
 	if dir, err := os.Getwd(); err != nil {
-		Error.Fatalln(err)
-		return ""
+		// 避免循环依赖，直接panic而不是使用Error.Fatalln
+		panic("Failed to get current working directory: " + err.Error())
 	} else {
 		return dir
 	}

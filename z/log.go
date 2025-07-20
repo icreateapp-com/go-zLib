@@ -1,10 +1,11 @@
 package z
 
 import (
-	"github.com/fatih/color"
 	"io"
 	sysLog "log"
 	"os"
+
+	"github.com/fatih/color"
 )
 
 // 定义日志级别
@@ -67,7 +68,7 @@ func (logger *_logger) Init(writeLogFile bool, debugMode bool) {
 	Debug = sysLog.New(io.MultiWriter(debugWriters...), "[DEBUG] ", errorFormat)
 	Info = sysLog.New(io.MultiWriter(infoWriters...), "[INFO]  ", errorFormat)
 	Warn = sysLog.New(io.MultiWriter(warnWriters...), "[WARN]  ", errorFormat)
-	Error = sysLog.New(io.MultiWriter(errorWriters...), "[FATAL] ", errorFormat)
+	Error = sysLog.New(io.MultiWriter(errorWriters...), "[ERROR] ", errorFormat)
 }
 
 // 定义自定义日志写入器

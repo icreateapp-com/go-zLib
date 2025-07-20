@@ -11,8 +11,8 @@ type IModel interface {
 	TableName() string
 }
 
-// Model 模型基类
-type Model struct {
+// BaseModel 模型基类
+type BaseModel struct {
 }
 
 // Timestamp 模型时间戳
@@ -22,7 +22,7 @@ type Timestamp struct {
 }
 
 type AutoIncrement struct {
-	ID uint `json:"id" gorm:"unique;primaryKey;autoIncrement"`
+	ID int64 `json:"id" gorm:"unique;primaryKey;autoIncrement"`
 }
 
 type Uuid struct {

@@ -118,3 +118,8 @@ func StringToSlice(input string, separators ...string) []string {
 func GetUUID() string {
 	return uuid.New().String()
 }
+
+// GetInt64 获取Int64
+func GetInt64(str string) (int64, error) {
+	return strconv.ParseInt(str, 10, 64)
+}

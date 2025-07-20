@@ -152,10 +152,11 @@ func (s *serviceDiscoverProvider) registerService() error {
 			"grpc_port":  grpcPort,
 			"auth_token": tokens,
 		}
-		res, err := PostJson(
+		res, err := Post(
 			address+"/api/service/register",
 			data,
 			map[string]string{"Authorization": apikey},
+			RequestContentTypeJSON,
 		)
 		if err != nil {
 			if attempt < maxRetries {
@@ -168,7 +169,7 @@ func (s *serviceDiscoverProvider) registerService() error {
 		}
 
 		var response Response
-		if err := json.Unmarshal([]byte(res), &response); err != nil {
+		if err := json.Unmarshal(res, &response); err != nil {
 			if attempt < maxRetries {
 				Warn.Printf("Retrying in %d seconds...", retryInterval)
 				time.Sleep(time.Duration(retryInterval) * time.Second)
@@ -357,12 +358,12 @@ func (s *serviceDiscoverProvider) HttpCall(name string, request ServiceRequestPa
 	}
 
 	// 发起请求
-	var res string
+	var res []byte
 	switch request.Method {
 	case "POST":
-		res, err = Post(fullUrl, request.Data, headers)
+		res, err = Post(fullUrl, request.Data, headers, RequestContentTypeJSON)
 	case "PUT":
-		res, err = Put(fullUrl, request.Data, headers)
+		res, err = Put(fullUrl, request.Data, headers, RequestContentTypeJSON)
 	case "DELETE":
 		res, err = Delete(fullUrl, headers)
 	default:
@@ -374,7 +375,7 @@ func (s *serviceDiscoverProvider) HttpCall(name string, request ServiceRequestPa
 	}
 
 	// 解析响应
-	err = json.Unmarshal([]byte(res), &response)
+	err = json.Unmarshal(res, &response)
 	if err != nil {
 		return err
 	}
