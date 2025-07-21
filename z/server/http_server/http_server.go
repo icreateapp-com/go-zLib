@@ -2,6 +2,7 @@ package http_server
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/gin-contrib/static"
@@ -24,8 +25,23 @@ func HttpServe(setup func(engine *gin.Engine), router func(engine *gin.Engine), 
 	time.Local = loc
 
 	// load config
-	if err := Config.LoadFile(BasePath(), "config.yml"); err != nil {
-		Error.Fatalln(err.Error())
+	configFile := "config.yml"
+	if envFile := os.Getenv("CONFIG_FILE"); envFile != "" {
+		configFile = envFile
+	}
+	if err := Config.LoadFile(BasePath(), configFile); err != nil {
+		panic(err.Error())
+	}
+
+	// load config dir
+	hasConfigDir, err := IsExists(BasePath("configs"))
+	if err != nil {
+		panic(err.Error())
+	}
+	if hasConfigDir {
+		if err := Config.LoadDir(BasePath("configs")); err != nil {
+			panic(err.Error())
+		}
 	}
 
 	// Init log system

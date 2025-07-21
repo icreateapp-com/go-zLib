@@ -6,17 +6,16 @@ import (
 )
 
 // BasePath 返回项目目录绝对路径
-func BasePath() string {
+func BasePath(paths ...string) string {
 	if dir, err := os.Getwd(); err != nil {
-		// 避免循环依赖，直接panic而不是使用Error.Fatalln
 		panic("Failed to get current working directory: " + err.Error())
 	} else {
-		return dir
+		return path.Join(append([]string{dir}, paths...)...)
 	}
 }
 
-// StorePath 返回存储目录绝对路径
-func StorePath(paths ...string) string {
+// StoragePath 返回存储目录绝对路径
+func StoragePath(paths ...string) string {
 	return path.Join(append([]string{BasePath(), "storage"}, paths...)...)
 }
 
