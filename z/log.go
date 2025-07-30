@@ -44,6 +44,15 @@ func (logger *_logger) Init(writeLogFile bool, debugMode bool) {
 
 	// enable write log ?
 	if writeLogFile {
+		// 检查并创建日志目录
+		logDir := LogPath()
+		if _, err := os.Stat(logDir); os.IsNotExist(err) {
+			if err := os.MkdirAll(logDir, 0755); err != nil {
+				color.Red("create log directory failed, err:", err)
+				return
+			}
+		}
+
 		logFile, err := os.OpenFile(LogPath("debug.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			color.Red("open log file failed, err:", err)

@@ -10,31 +10,60 @@ import (
 )
 
 // ParseSearch 解析搜索条件
-func (p QueryParser[T]) ParseSearch(db *gorm.DB, search []ConditionGroup, required []string) (*gorm.DB, error) {
+func ParseSearch(db *gorm.DB, search []ConditionGroup, required []string) (*gorm.DB, error) {
 	if len(search) == 0 && len(required) == 0 {
 		return db, nil
 	}
 
 	// 处理必需条件
 	for _, req := range required {
-		if !p.isValidFieldName(req) {
+		if !isValidFieldName(req) {
 			return nil, errors.New("invalid required field name: " + req)
 		}
 		db = db.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", DB.F(req), DB.F(req)))
 	}
 
+	// 检查 required 字段是否在 Search 中
+	if len(required) > 0 {
+		requiredFields := make(map[string]bool)
+		for _, field := range required {
+			requiredFields[field] = false
+		}
+
+		for _, group := range search {
+			for _, condition := range group.Conditions {
+				if len(condition) < 2 {
+					return nil, errors.New("invalid condition: each condition must have at least 2 elements")
+				}
+
+				field := condition[0].(string)
+				if _, exists := requiredFields[field]; exists {
+					requiredFields[field] = true
+				}
+			}
+		}
+
+		for field, found := range requiredFields {
+			if !found {
+				return nil, fmt.Errorf("required field '%s' is missing in search conditions", field)
+			}
+		}
+	}
+
+	var conditions []string
+	var values []interface{}
+
 	// 处理搜索条件组
 	for _, group := range search {
-		if len(group) == 0 {
+		if len(group.Conditions) == 0 {
 			continue
 		}
 
-		var conditions []string
-		var args []interface{}
+		var groupConditions []string
 
-		for _, condition := range group {
+		for _, condition := range group.Conditions {
 			if len(condition) < 2 {
-				return nil, errors.New("invalid condition: must have at least field and value")
+				return nil, errors.New("invalid condition: each condition must have at least 2 elements")
 			}
 
 			// 安全的类型断言
@@ -43,7 +72,7 @@ func (p QueryParser[T]) ParseSearch(db *gorm.DB, search []ConditionGroup, requir
 				return nil, errors.New("invalid condition: field must be string")
 			}
 
-			if !p.isValidFieldName(field) {
+			if !isValidFieldName(field) {
 				return nil, errors.New("invalid field name: " + field)
 			}
 
@@ -56,31 +85,58 @@ func (p QueryParser[T]) ParseSearch(db *gorm.DB, search []ConditionGroup, requir
 			}
 
 			// 验证操作符
-			if !p.isValidOperator(operator) {
+			if !isValidOperator(operator) {
 				return nil, fmt.Errorf("invalid operator: '%s' is not a valid operator", operator)
 			}
 
-			conditionSQL, conditionArgs, err := p.buildCondition(field, value, operator)
-			if err != nil {
-				return nil, err
+			// 处理特殊的 like 操作符
+			switch strings.ToLower(operator) {
+			case "like":
+				if str, ok := value.(string); ok && !strings.Contains(str, "%") {
+					value = "%" + str + "%"
+				}
+			case "left like":
+				if str, ok := value.(string); ok {
+					value = "%" + str
+					operator = "like"
+				}
+			case "right like":
+				if str, ok := value.(string); ok {
+					value = str + "%"
+					operator = "like"
+				}
 			}
 
-			conditions = append(conditions, conditionSQL)
-			args = append(args, conditionArgs...)
+			field = DB.F(field)
+			groupConditions = append(groupConditions, fmt.Sprintf("%s %s ?", field, operator))
+			values = append(values, value)
 		}
 
-		if len(conditions) > 0 {
-			// 组内条件用 OR 连接
-			groupCondition := "(" + strings.Join(conditions, " OR ") + ")"
-			db = db.Where(groupCondition, args...)
+		if len(groupConditions) == 0 {
+			continue
 		}
+
+		// 设置默认操作符
+		if group.Operator == "" {
+			group.Operator = "AND"
+		}
+
+		// 组内条件用指定的操作符连接
+		groupClause := strings.Join(groupConditions, " "+strings.ToUpper(group.Operator)+" ")
+		conditions = append(conditions, fmt.Sprintf("(%s)", groupClause))
+	}
+
+	if len(conditions) > 0 {
+		// 组间条件用 AND 连接
+		whereClause := strings.Join(conditions, " AND ")
+		db = db.Where(whereClause, values...)
 	}
 
 	return db, nil
 }
 
 // isValidOperator 验证操作符是否有效
-func (p QueryParser[T]) isValidOperator(operator string) bool {
+func isValidOperator(operator string) bool {
 	validOperators := map[string]bool{
 		"=":           true,
 		"!=":          true,
@@ -89,20 +145,28 @@ func (p QueryParser[T]) isValidOperator(operator string) bool {
 		">=":          true,
 		"<":           true,
 		"<=":          true,
+		"like":        true,
+		"left like":   true,
+		"right like":  true,
+		"not like":    true,
 		"LIKE":        true,
 		"NOT LIKE":    true,
 		"IN":          true,
 		"NOT IN":      true,
+		"in":          true,
+		"not in":      true,
 		"IS NULL":     true,
 		"IS NOT NULL": true,
 		"BETWEEN":     true,
 		"NOT BETWEEN": true,
+		"between":     true,
+		"not between": true,
 	}
-	return validOperators[strings.ToUpper(operator)]
+	return validOperators[operator]
 }
 
 // buildCondition 构建单个条件
-func (p QueryParser[T]) buildCondition(field string, value interface{}, operator string) (string, []interface{}, error) {
+func buildCondition(field string, value interface{}, operator string) (string, []interface{}, error) {
 	field = DB.F(field)
 	operator = strings.ToUpper(operator)
 

@@ -3,13 +3,14 @@ package z
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/go-playground/validator/v10"
 	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-playground/validator/v10"
 )
 
 // GetSortedMapKeys 返回排序后的 MAP 所有键
@@ -324,4 +325,131 @@ func ConvertDefaultValue(str string, kind reflect.Kind) (interface{}, bool) {
 		return str, true
 	}
 	return nil, false
+}
+
+// StructToMapWithFilter 将结构转换为带有指定字段对象
+func StructToMapWithFilter(obj any, fieldsToInclude ...string) (map[string]interface{}, error) {
+	fieldSet := make(map[string]bool)
+	for _, f := range fieldsToInclude {
+		fieldSet[f] = true
+	}
+
+	return toMapRecursive(reflect.ValueOf(obj), fieldSet)
+}
+
+func toMapRecursive(v reflect.Value, fieldSet map[string]bool) (map[string]interface{}, error) {
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	t := v.Type()
+	result := make(map[string]interface{})
+
+	for i := 0; i < v.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" { // 非导出字段跳过
+			continue
+		}
+
+		fieldValue := v.Field(i)
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			jsonTag = field.Name
+		}
+
+		if !fieldSet[jsonTag] {
+			continue
+		}
+
+		val, err := processValue(fieldValue, fieldSet)
+		if err != nil {
+			return nil, err
+		}
+		result[jsonTag] = val
+	}
+	return result, nil
+}
+
+func processValue(v reflect.Value, fieldSet map[string]bool) (interface{}, error) {
+	switch v.Kind() {
+	case reflect.Struct:
+		return toMapRecursive(v, fieldSet)
+	case reflect.Slice, reflect.Array:
+		var list []interface{}
+		for i := 0; i < v.Len(); i++ {
+			elem := v.Index(i)
+			val, err := processValue(elem, fieldSet)
+			if err != nil {
+				return nil, err
+			}
+			list = append(list, val)
+		}
+		return list, nil
+	case reflect.Map:
+		out := map[interface{}]interface{}{}
+		for _, key := range v.MapKeys() {
+			val, err := processValue(v.MapIndex(key), fieldSet)
+			if err != nil {
+				return nil, err
+			}
+			out[key.Interface()] = val
+		}
+		return out, nil
+	case reflect.Ptr:
+		if v.IsNil() {
+			return nil, nil
+		}
+		return processValue(v.Elem(), fieldSet)
+	default:
+		return v.Interface(), nil
+	}
+}
+
+// ToMarkdownTable 将数据转换为 Markdown 表格
+func ToMarkdownTable(headers []string, data []map[string]interface{}) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("the data slice is empty")
+	}
+
+	var markdownTable strings.Builder
+	var tableStr string
+
+	// Write table headers
+	markdownTable.WriteString("| ")
+	headersLen := len(headers)
+	for headersIndex, title := range headers {
+		if headersLen == (headersIndex + 1) {
+			markdownTable.WriteString(title + " |")
+		} else {
+			markdownTable.WriteString(title + " | ")
+		}
+	}
+	markdownTable.WriteString("\n")
+
+	// Write separator
+	markdownTable.WriteString("|")
+	for range headers {
+		markdownTable.WriteString(" ------------ |")
+	}
+	markdownTable.WriteString("\n")
+
+	// Write table rows
+	for _, row := range data {
+		markdownTable.WriteString("| ")
+		rowIndex := 0
+		for _, key := range headers {
+			value := row[key]
+			if headersLen == (rowIndex + 1) {
+				markdownTable.WriteString(fmt.Sprintf("%v |", value))
+			} else {
+				markdownTable.WriteString(fmt.Sprintf("%v | ", value))
+			}
+			rowIndex++
+		}
+		markdownTable.WriteString("\n")
+	}
+
+	tableStr = strings.TrimSpace(markdownTable.String())
+
+	return tableStr, nil
 }

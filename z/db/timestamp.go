@@ -17,6 +17,18 @@ func (t WrapTime) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf("\"%s\"", t.Format("2006-01-02 15:04:05"))), nil
 }
 
+// UnmarshalJSON 自定义 JSON 反序列化格式
+func (t *WrapTime) UnmarshalJSON(data []byte) error {
+	str := string(data)
+	str = str[1 : len(str)-1] // 去除引号
+	tt, err := time.Parse("2006-01-02 15:04:05", str)
+	if err != nil {
+		return err
+	}
+	t.Time = tt
+	return nil
+}
+
 // Value 实现了 driver.Valuer 接口，用于将时间值插入到数据库中。
 // 如果时间是零值（即未设置），则返回 nil；否则返回实际的时间值。
 func (t WrapTime) Value() (driver.Value, error) {

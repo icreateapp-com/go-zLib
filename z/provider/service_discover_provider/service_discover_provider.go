@@ -135,7 +135,7 @@ func (s *serviceDiscoverProvider) registerService() error {
 		grpcHost, _ = GetLocalIP()
 	}
 
-	tokens, err := Config.StringMap("config.http.auth")
+	tokens, err := Config.StringMap("config.auth.restricted")
 	if err != nil {
 		return err
 	}

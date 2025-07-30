@@ -1,4 +1,4 @@
-package provider
+package config_center_provider
 
 import (
 	"encoding/json"

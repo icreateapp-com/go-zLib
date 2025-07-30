@@ -1,0 +1,182 @@
+package db
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"sync"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
+)
+
+type ICrudService[T IModel] interface {
+	Get(query ...Query) ([]T, error)
+	Page(query ...Query) (*Pager, error)
+	Find(id interface{}, query ...Query) (*T, error)
+	Create(model *T) (*T, error)
+	Update(id interface{}, model *T) (bool, error)
+	Delete(query ...Query) (bool, error)
+	DeleteByID(id interface{}, query ...Query) (bool, error)
+}
+
+type CrudService[T IModel] struct {
+	CreateOnly []string // 创建时允许的字段
+	CreateOmit []string // 创建时忽略的字段
+	UpdateOnly []string // 更新时允许的字段
+	UpdateOmit []string // 更新时忽略的字段
+	Unique     []string // 唯一字段(更新时要忽略更新数据的ID)
+}
+
+// Get 获取数据列表
+func (s *CrudService[T]) Get(query ...Query) ([]T, error) {
+	q := Query{}
+	if len(query) > 0 {
+		q = query[0]
+	}
+	var result []T
+	err := (&QueryBuilder[T]{Query: q}).Get(&result)
+	return result, err
+}
+
+// Page 获取数据
+func (s *CrudService[T]) Page(query ...Query) (*Pager, error) {
+	q := Query{}
+	if len(query) > 0 {
+		q = query[0]
+	}
+	var pager Pager
+	err := (&QueryBuilder[T]{Query: q}).Page(&pager)
+	return &pager, err
+}
+
+// Find 查找数据
+func (s *CrudService[T]) Find(id interface{}, query ...Query) (*T, error) {
+	q := Query{}
+	if len(query) > 0 {
+		q = query[0]
+	}
+	var result T
+	err := (&QueryBuilder[T]{Query: q}).Find(id, &result)
+	return &result, err
+}
+
+// Create 创建
+func (s *CrudService[T]) Create(model *T) (*T, error) {
+	// 唯一字段检查
+	if err := s.checkUnique(model); err != nil {
+		return nil, err
+	}
+	res, err := CreateBuilder[T]{}.Create(*model, func(tx *gorm.DB) *gorm.DB {
+		if len(s.CreateOnly) > 0 {
+			return tx.Select(s.CreateOnly)
+		}
+		if len(s.CreateOmit) > 0 {
+			return tx.Omit(s.CreateOmit...)
+		}
+		return tx
+	})
+	return &res, err
+}
+
+// Update 更新
+func (s *CrudService[T]) Update(id interface{}, model *T) (bool, error) {
+	if model == nil {
+		return false, fmt.Errorf("model can not be nil")
+	}
+	// 唯一字段检查
+	if err := s.checkUnique(model, id); err != nil {
+		return false, err
+	}
+	return UpdateBuilder[T]{}.UpdateByID(id, *model, func(tx *gorm.DB) *gorm.DB {
+		if len(s.UpdateOnly) > 0 {
+			return tx.Select(s.UpdateOnly)
+		}
+		if len(s.UpdateOmit) > 0 {
+			return tx.Omit(s.UpdateOmit...)
+		}
+		return tx
+	})
+}
+
+// Delete 根据查询条件删除数据
+func (s *CrudService[T]) Delete(query ...Query) (bool, error) {
+	q := Query{}
+	if len(query) > 0 {
+		q = query[0]
+	}
+	return DeleteBuilder[T]{}.Delete(q)
+}
+
+// DeleteByID 根据ID删除数据，支持额外的查询条件
+func (s *CrudService[T]) DeleteByID(id interface{}, query ...Query) (bool, error) {
+	if len(query) > 0 {
+		return DeleteBuilder[T]{}.DeleteByID(id, query[0])
+	}
+	return DeleteBuilder[T]{}.DeleteByID(id)
+}
+
+// checkUnique 检查唯一字段
+func (s *CrudService[T]) checkUnique(model *T, excludeID ...interface{}) error {
+	// 如果没有设置唯一字段或者模型为空，则直接返回
+	if len(s.Unique) == 0 || model == nil {
+		return nil
+	}
+
+	// 使用 GORM 的 schema 解析来健壮地处理字段
+	sch, err := schema.Parse(model, &sync.Map{}, DB.NamingStrategy)
+	if err != nil {
+		return fmt.Errorf("failed to parse model schema: %w", err)
+	}
+
+	modelValue := reflect.ValueOf(model).Elem()
+
+	for _, fieldName := range s.Unique {
+		// 优先按结构体字段名查找
+		field := sch.LookUpField(fieldName)
+		if field == nil {
+			// 然后按数据库列名查找
+			if f, ok := sch.FieldsByDBName[fieldName]; ok {
+				field = f
+			}
+		}
+		// 如果都找不到，说明配置有误，跳过此字段
+		if field == nil {
+			continue
+		}
+
+		// 获取字段的值，并检查是否为零值
+		fieldValue, isZero := field.ValueOf(context.Background(), modelValue)
+		if isZero {
+			continue
+		}
+
+		// 构建查询
+		query := DB.Model(new(T)).Where(fmt.Sprintf("%s = ?", field.DBName), fieldValue)
+
+		// 如果是更新操作，则排除当前 ID
+		if len(excludeID) > 0 && excludeID[0] != nil {
+			// 动态获取主键的数据库列名
+			if len(sch.PrimaryFields) > 0 {
+				pkColumnName := sch.PrimaryFields[0].DBName
+				query = query.Where(fmt.Sprintf("%s != ?", pkColumnName), excludeID[0])
+			} else {
+				// Fallback for models without explicit primary key tag, assuming 'id'
+				query = query.Where("id != ?", excludeID[0])
+			}
+		}
+
+		// 执行查询
+		var count int64
+		if err := query.Count(&count).Error; err != nil {
+			return err
+		}
+
+		// 如果存在重复记录，则返回错误
+		if count > 0 {
+			return fmt.Errorf("field '%s' with value '%v' already exists", field.Name, fieldValue)
+		}
+	}
+
+	return nil
+}

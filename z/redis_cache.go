@@ -101,3 +101,15 @@ func (r *redisCache) TTL(key string) (time.Duration, error) {
 
 	return duration, nil
 }
+
+// Keys 根据模式获取匹配的键列表
+func (r *redisCache) Keys(pattern string) ([]string, error) {
+	ctx := context.Background()
+
+	keys, err := r.client.Keys(ctx, pattern).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	return keys, nil
+}

@@ -3,11 +3,13 @@ package z
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 // StringIsEmpty 判断字符串是否为空
@@ -119,7 +121,33 @@ func GetUUID() string {
 	return uuid.New().String()
 }
 
-// GetInt64 获取Int64
-func GetInt64(str string) (int64, error) {
+// ToInt64 获取Int64
+func ToInt64(str string) (int64, error) {
 	return strconv.ParseInt(str, 10, 64)
+}
+
+// CountWords 获取字符串长度
+func CountWords(text string) int {
+	return utf8.RuneCountInString(text)
+}
+
+// Substring 按字符截取字符串
+func Substring(s string, start int, length int) string {
+	if start < 0 || length <= 0 {
+		return ""
+	}
+
+	runes := []rune(s)
+	total := len(runes)
+
+	if start >= total {
+		return ""
+	}
+
+	end := start + length
+	if end > total {
+		end = total
+	}
+
+	return string(runes[start:end])
 }

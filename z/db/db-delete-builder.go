@@ -15,9 +15,7 @@ func (q DeleteBuilder[T]) Delete(query Query) (bool, error) {
 		db = DB.Model(&zero)
 	}
 
-	// 使用解析器解析查询条件
-	parser := QueryParser[T]{TX: q.TX}
-	db, err := parser.ParseSearch(db, query.Search, query.Required)
+	db, err := ParseSearch(db, query.Search, query.Required)
 	if err != nil {
 		return false, err
 	}
@@ -29,11 +27,34 @@ func (q DeleteBuilder[T]) Delete(query Query) (bool, error) {
 	return true, nil
 }
 
-func (q DeleteBuilder[T]) DeleteByID(id interface{}) (bool, error) {
+func (q DeleteBuilder[T]) DeleteByID(id interface{}, additionalQuery ...Query) (bool, error) {
+	// 构建基础的ID查询条件
 	query := Query{
 		Search: []ConditionGroup{
-			{{"id", id}},
+			{
+				Conditions: [][]interface{}{{"id", id}},
+				Operator:   "AND",
+			},
 		},
 	}
+
+	// 如果有额外的查询条件，合并到现有查询中
+	if len(additionalQuery) > 0 {
+		additional := additionalQuery[0]
+
+		// 合并搜索条件
+		if len(additional.Search) > 0 {
+			query.Search = append(query.Search, additional.Search...)
+		}
+
+		// 合并其他查询参数
+		if len(additional.Filter) > 0 {
+			query.Filter = additional.Filter
+		}
+		if len(additional.Required) > 0 {
+			query.Required = additional.Required
+		}
+	}
+
 	return q.Delete(query)
 }

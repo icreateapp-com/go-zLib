@@ -3,6 +3,8 @@ package http_middleware
 import (
 	"github.com/gin-gonic/gin"
 	. "github.com/icreateapp-com/go-zLib/z"
+	"github.com/icreateapp-com/go-zLib/z/provider/auth_provider"
+	"github.com/icreateapp-com/go-zLib/z/provider/event_bus_provider"
 	"net/http"
 	"strings"
 )
@@ -10,8 +12,8 @@ import (
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		// skip anonymity url
-		if skips, err := Config.StringSlice("config.http.anonymity"); err == nil {
+		// skip anonymity url - 始终优先检查匿名路径
+		if skips, err := Config.StringSlice("config.auth.anonymity"); err == nil {
 			if c.Request.URL.Path == "/" {
 				c.Next()
 				return
@@ -24,45 +26,20 @@ func AuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		// get token
-		inputToken := c.Request.Header.Get("Authorization")
-		if StringIsEmpty(inputToken) {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Access token cannot be empty", "code": 20000})
+		// 使用 auth_provider 从上下文验证 token
+		if userID, isValid := auth_provider.AuthProvider.Verify(c); isValid {
+			// token验证成功，放行
+			event_bus_provider.EmitAsync[map[string]interface{}]("app.auth.verify", map[string]interface{}{"user_id": userID, "logined": true})
+			// 将用户ID存储到上下文中，供后续使用
+			c.Set("user_id", userID)
+			c.Next()
+			return
+		} else {
+			// token验证失败
+			event_bus_provider.EmitAsync[map[string]interface{}]("app.auth.verify", map[string]interface{}{"user_id": userID, "logined": false})
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Authentication failed or session expired", "code": 20000})
 			c.Abort()
 			return
 		}
-		if strings.HasPrefix(inputToken, "Bearer ") {
-			inputToken = strings.TrimPrefix(inputToken, "Bearer ")
-		}
-
-		// 获取 auth 配置
-		authConfig, err := Config.StringMap("config.http.auth")
-		if err != nil {
-			c.JSON(401, gin.H{"error": "Unauthorized"})
-			c.Abort()
-			return
-		}
-
-		// 标准化请求路径
-		requestPath := strings.TrimPrefix(c.Request.URL.Path, "/")
-
-		// 遍历 auth 配置，找到匹配的路径前缀
-		for pathPrefix, configToken := range authConfig {
-			normalizedPrefix := strings.TrimPrefix(pathPrefix, "/")
-
-			if strings.HasPrefix(requestPath, normalizedPrefix) {
-				if inputToken == configToken {
-					c.Next()
-					return
-				} else {
-					c.JSON(401, gin.H{"error": "Unauthorized"})
-					c.Abort()
-					return
-				}
-			}
-		}
-
-		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Access token error", "code": 20000})
-		c.Abort()
 	}
 }

@@ -2,7 +2,9 @@ package z
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -243,4 +245,54 @@ func IsScalar(a interface{}) bool {
 	default:
 		return false
 	}
+}
+
+// ToMap 将 interface{} 转换为 map[string]interface{}
+func ToMap(obj interface{}, fields ...string) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	val := reflect.ValueOf(obj)
+
+	if !val.IsValid() {
+		return nil, errors.New("invalid value")
+	}
+
+	if val.Kind() == reflect.Ptr {
+		if val.IsNil() {
+			return nil, errors.New("nil pointer passed")
+		}
+		val = val.Elem()
+	}
+
+	if val.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("expected struct, got %s", val.Kind())
+	}
+
+	typ := val.Type()
+	fieldSet := make(map[string]struct{}, len(fields))
+	for _, f := range fields {
+		fieldSet[f] = struct{}{}
+	}
+
+	for i := 0; i < val.NumField(); i++ {
+		field := typ.Field(i)
+
+		if _, ok := fieldSet[field.Name]; ok {
+			if field.PkgPath != "" {
+				return nil, fmt.Errorf("cannot access unexported field: %s", field.Name)
+			}
+			result[field.Name] = val.Field(i).Interface()
+		}
+	}
+
+	return result, nil
+}
+
+// ToJsonString 将 interface{} 转换为 json.RawMessage
+func ToJsonString(s interface{}) []byte {
+	marshal, err := json.Marshal(s)
+	if err != nil {
+		return nil
+	}
+
+	return marshal
 }

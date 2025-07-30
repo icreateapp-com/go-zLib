@@ -1,4 +1,4 @@
-package provider
+package grpc_service_provider
 
 import (
 	"fmt"
@@ -8,17 +8,17 @@ import (
 	"google.golang.org/grpc"
 )
 
-type serviceGrpcProvider struct {
+type grpcServiceProvider struct {
 	server *grpc.Server
 }
 
-var ServiceGrpcProvider serviceGrpcProvider
+var GrpcServiceProvider grpcServiceProvider
 
 // Register 服务注册
 // 该方法用于注册gRPC服务并启动gRPC服务器。
 // 使用示例：
 //
-//	provider.ServiceGrpcProvider.Register(func(server *grpc.Server) {
+//	provider.GrpcServiceProvider.Register(func(server *grpc.Server) {
 //	    pb.RegisterYourServiceServer(server, &yourService{})
 //	})
 //
@@ -28,7 +28,7 @@ var ServiceGrpcProvider serviceGrpcProvider
 //	grpc:
 //	  host: "0.0.0.0"
 //	  port: 7000
-func (s *serviceGrpcProvider) Register(services func(server *grpc.Server)) {
+func (s *grpcServiceProvider) Register(services func(server *grpc.Server)) {
 
 	// create grpc server
 	s.server = grpc.NewServer()

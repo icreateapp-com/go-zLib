@@ -23,7 +23,7 @@ func ErrorTrackerMiddleware() gin.HandlerFunc {
 		Tracker.LogError(trackedErr)
 
 		// 返回500错误
-		Failure(c, "Internal Server Error", 50000)
+		Failure(c, "Internal Server Error", 500)
 		c.Abort()
 	})
 }

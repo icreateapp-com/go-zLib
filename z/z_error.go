@@ -10,15 +10,23 @@ import (
 	"time"
 )
 
+// StackFrame 调用栈帧信息
+type StackFrame struct {
+	File     string // 文件路径
+	Line     int    // 行号
+	Function string // 函数名
+	Package  string // 包名
+}
+
 // TraceData 追踪数据
 type TraceData struct {
-	No       int       // 编号
-	Type     string    // 类型：ERROR
-	Time     time.Time // 时间：2025/07/20 00:21:48
-	File     string    // 文件：项目相对路径：/src/main.go
-	Line     int       // 行号
-	Message  string    // 错误消息
-	Function string    // 函数名
+	No         int          // 编号
+	Type       string       // 类型：ERROR, PANIC
+	Time       time.Time    // 时间
+	Message    string       // 错误消息
+	StackTrace []StackFrame // 完整调用栈
+	ErrorFile  string       // 错误发生的文件
+	ErrorLine  int          // 错误发生的行号
 }
 
 // TrackedError 包装的错误类型
@@ -39,12 +47,63 @@ type tracker struct {
 	currentReqID  string                 // 当前请求ID（简化实现）
 	mutex         sync.RWMutex
 	counter       int
+	maxStackDepth int // 最大调用栈深度
 }
 
 // Tracker 追踪器
 var Tracker = &tracker{
 	traces:        make(map[string][]TraceData),
 	requestErrors: make(map[string][]string),
+	maxStackDepth: 32, // 默认最大调用栈深度
+}
+
+// captureStackTrace 捕获完整的调用栈信息
+func (t *tracker) captureStackTrace(skip int) []StackFrame {
+	var frames []StackFrame
+
+	// 获取调用栈，跳过指定的层数
+	pcs := make([]uintptr, t.maxStackDepth)
+	n := runtime.Callers(skip, pcs)
+
+	if n == 0 {
+		return frames
+	}
+
+	// 获取调用栈帧信息
+	callersFrames := runtime.CallersFrames(pcs[:n])
+
+	for {
+		frame, more := callersFrames.Next()
+
+		// 过滤掉runtime相关的调用
+		if !strings.Contains(frame.Function, "runtime.") {
+			// 获取包名和函数名
+			funcName := frame.Function
+			packageName := ""
+			if idx := strings.LastIndex(funcName, "/"); idx != -1 {
+				if idx2 := strings.Index(funcName[idx:], "."); idx2 != -1 {
+					packageName = funcName[:idx+idx2]
+					funcName = funcName[idx+idx2+1:]
+				}
+			} else if idx := strings.LastIndex(funcName, "."); idx != -1 {
+				packageName = funcName[:idx]
+				funcName = funcName[idx+1:]
+			}
+
+			frames = append(frames, StackFrame{
+				File:     t.getRelativePath(frame.File),
+				Line:     frame.Line,
+				Function: funcName,
+				Package:  packageName,
+			})
+		}
+
+		if !more {
+			break
+		}
+	}
+
+	return frames
 }
 
 // Error 错误包装器 - 记录错误调用链路
@@ -52,21 +111,6 @@ func (t *tracker) Error(err error) error {
 	if err == nil {
 		return nil
 	}
-
-	// 获取调用者信息
-	pc, file, line, ok := runtime.Caller(1)
-	if !ok {
-		return err
-	}
-
-	// 获取函数名
-	funcName := runtime.FuncForPC(pc).Name()
-	if idx := strings.LastIndex(funcName, "."); idx != -1 {
-		funcName = funcName[idx+1:]
-	}
-
-	// 获取相对路径
-	relativeFile := t.getRelativePath(file)
 
 	var traceID string
 	var existingTraces []TraceData
@@ -80,18 +124,29 @@ func (t *tracker) Error(err error) error {
 		traceID = t.generateTraceID()
 	}
 
+	// 捕获完整的调用栈（跳过当前函数）
+	stackTrace := t.captureStackTrace(2)
+
+	// 确定错误发生的位置（调用Error函数的位置）
+	var errorFile string
+	var errorLine int
+	if len(stackTrace) > 0 {
+		errorFile = stackTrace[0].File
+		errorLine = stackTrace[0].Line
+	}
+
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	// 创建新的追踪数据
 	traceData := TraceData{
-		No:       len(existingTraces),
-		Type:     "ERROR",
-		Time:     time.Now(),
-		File:     relativeFile,
-		Line:     line,
-		Message:  err.Error(),
-		Function: funcName,
+		No:         len(existingTraces),
+		Type:       "ERROR",
+		Time:       time.Now(),
+		Message:    err.Error(),
+		StackTrace: stackTrace,
+		ErrorFile:  errorFile,
+		ErrorLine:  errorLine,
 	}
 
 	// 添加到追踪链
@@ -99,7 +154,6 @@ func (t *tracker) Error(err error) error {
 	t.traces[traceID] = newTraces
 
 	// 标记当前请求有错误（如果能获取到请求ID）
-	// 注意：这里直接访问currentReqID，因为已经持有了锁
 	requestID := t.currentReqID
 	if requestID != "" {
 		if _, exists := t.requestErrors[requestID]; !exists {
@@ -129,7 +183,76 @@ func (t *tracker) Error(err error) error {
 // Errorf 格式化错误包装器 - 支持 fmt.Errorf 的格式化形式
 func (t *tracker) Errorf(format string, args ...interface{}) error {
 	err := fmt.Errorf(format, args...)
-	return t.Error(err)
+	if err == nil {
+		return nil
+	}
+
+	var traceID string
+	var existingTraces []TraceData
+
+	// 检查是否已经是被跟踪的错误
+	if trackedErr, ok := err.(*TrackedError); ok {
+		traceID = trackedErr.TraceID
+		existingTraces = trackedErr.Traces
+	} else {
+		// 新的错误，生成新的 traceID
+		traceID = t.generateTraceID()
+	}
+
+	// 捕获完整的调用栈（跳过当前函数）
+	stackTrace := t.captureStackTrace(2)
+
+	// 确定错误发生的位置（调用Errorf函数的位置）
+	var errorFile string
+	var errorLine int
+	if len(stackTrace) > 0 {
+		errorFile = stackTrace[0].File
+		errorLine = stackTrace[0].Line
+	}
+
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	// 创建新的追踪数据
+	traceData := TraceData{
+		No:         len(existingTraces),
+		Type:       "ERROR",
+		Time:       time.Now(),
+		Message:    err.Error(),
+		StackTrace: stackTrace,
+		ErrorFile:  errorFile,
+		ErrorLine:  errorLine,
+	}
+
+	// 添加到追踪链
+	newTraces := append(existingTraces, traceData)
+	t.traces[traceID] = newTraces
+
+	// 标记当前请求有错误（如果能获取到请求ID）
+	requestID := t.currentReqID
+	if requestID != "" {
+		if _, exists := t.requestErrors[requestID]; !exists {
+			t.requestErrors[requestID] = []string{}
+		}
+		// 避免重复添加相同的traceID
+		found := false
+		for _, existingTraceID := range t.requestErrors[requestID] {
+			if existingTraceID == traceID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.requestErrors[requestID] = append(t.requestErrors[requestID], traceID)
+		}
+	}
+
+	// 返回包装的错误
+	return &TrackedError{
+		OriginalError: err,
+		TraceID:       traceID,
+		Traces:        newTraces,
+	}
 }
 
 // GetData 获取所有追踪数据
@@ -206,16 +329,20 @@ func (t *tracker) formatTraceLog(traces []TraceData) string {
 
 	// 最后一个错误作为主错误信息
 	lastTrace := traces[len(traces)-1]
-	builder.WriteString(fmt.Sprintf("%s:%d: %s\n", lastTrace.File, lastTrace.Line, lastTrace.Message))
+	builder.WriteString(fmt.Sprintf("%s:%d: %s\n", lastTrace.ErrorFile, lastTrace.ErrorLine, lastTrace.Message))
 
 	// 添加堆栈跟踪
 	builder.WriteString("[stacktrace]\n")
 
-	// 倒序输出调用链（从最深层开始）
-	for i := len(traces) - 1; i >= 0; i-- {
-		trace := traces[i]
-		builder.WriteString(fmt.Sprintf("#%d %s:%d %s\n",
-			len(traces)-1-i, trace.File, trace.Line, trace.Function))
+	// 输出完整的调用栈信息
+	if len(lastTrace.StackTrace) > 0 {
+		for i, frame := range lastTrace.StackTrace {
+			builder.WriteString(fmt.Sprintf("#%d %s:%d in %s\n",
+				i, frame.File, frame.Line, frame.Function))
+		}
+	} else {
+		// 如果没有调用栈信息，显示基本信息
+		builder.WriteString(fmt.Sprintf("#0 %s:%d\n", lastTrace.ErrorFile, lastTrace.ErrorLine))
 	}
 
 	builder.WriteString("{main}")
@@ -278,19 +405,64 @@ func (t *tracker) ensureLogger() bool {
 // RecoverAndLog 恢复panic并记录错误
 func (t *tracker) RecoverAndLog() {
 	if r := recover(); r != nil {
-		var err error
-		if e, ok := r.(error); ok {
-			err = e
-		} else {
-			err = fmt.Errorf("%v", r)
+		// 生成新的 traceID
+		traceID := t.generateTraceID()
+
+		// 捕获完整的调用栈（跳过当前函数和recover相关的帧）
+		stackTrace := t.captureStackTrace(3)
+
+		// 确定panic发生的位置
+		var errorFile string
+		var errorLine int
+		if len(stackTrace) > 0 {
+			// 找到第一个非runtime相关的调用栈帧
+			for _, frame := range stackTrace {
+				if !strings.Contains(frame.File, "runtime/") &&
+					!strings.Contains(frame.File, "z_error.go") {
+					errorFile = frame.File
+					errorLine = frame.Line
+					break
+				}
+			}
+			// 如果没找到合适的帧，使用第一个
+			if errorFile == "" && len(stackTrace) > 0 {
+				errorFile = stackTrace[0].File
+				errorLine = stackTrace[0].Line
+			}
 		}
 
-		// 记录panic错误
-		trackedErr := t.Error(err)
-		t.LogError(trackedErr)
+		t.mutex.Lock()
+		defer t.mutex.Unlock()
 
-		// 重新抛出panic
-		panic(r)
+		// 创建panic追踪数据
+		traceData := TraceData{
+			No:         0,
+			Type:       "PANIC",
+			Time:       time.Now(),
+			Message:    fmt.Sprintf("%v", r),
+			StackTrace: stackTrace,
+			ErrorFile:  errorFile,
+			ErrorLine:  errorLine,
+		}
+
+		// 存储追踪数据
+		t.traces[traceID] = []TraceData{traceData}
+
+		// 标记当前请求有错误（如果能获取到请求ID）
+		requestID := t.currentReqID
+		if requestID != "" {
+			if _, exists := t.requestErrors[requestID]; !exists {
+				t.requestErrors[requestID] = []string{}
+			}
+			t.requestErrors[requestID] = append(t.requestErrors[requestID], traceID)
+		}
+
+		// 记录错误日志
+		t.LogError(&TrackedError{
+			OriginalError: fmt.Errorf("%v", r),
+			TraceID:       traceID,
+			Traces:        []TraceData{traceData},
+		})
 	}
 }
 
@@ -337,18 +509,13 @@ func (t *tracker) LogRequestErrors(requestID string) {
 		return
 	}
 
-	// 合并所有错误为一个完整的调用链
-	// 使用第一个traceID作为主要ID
-	mainTraceID := traceIDs[0]
-
 	// 重新编号所有追踪数据
 	for i := range allTraces {
 		allTraces[i].No = i
 	}
 
 	// 生成合并后的日志消息
-	logMessage := fmt.Sprintf("Request: %s, TraceID: %s\n%s",
-		requestID, mainTraceID, t.formatTraceLog(allTraces))
+	logMessage := fmt.Sprintf(t.formatTraceLog(allTraces))
 	Error.Println(logMessage)
 }
 

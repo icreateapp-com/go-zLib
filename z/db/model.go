@@ -17,12 +17,17 @@ type BaseModel struct {
 
 // Timestamp 模型时间戳
 type Timestamp struct {
-	CreatedAt WrapTime `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt WrapTime `gorm:"autoUpdateTime" json:"updated_at"`
+	CreatedAt WrapTime `gorm:"type:datetime;autoCreateTime;<-:create" json:"created_at"`
+	UpdatedAt WrapTime `gorm:"type:datetime;autoCreateTime;autoUpdateTime" json:"updated_at"`
+}
+
+// SoftDelete 软删除模型
+type SoftDelete struct {
+	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 type AutoIncrement struct {
-	ID int64 `json:"id" gorm:"unique;primaryKey;autoIncrement"`
+	ID int64 `json:"id" gorm:"unique;primaryKey;autoIncrement;->;<-:false"`
 }
 
 type Uuid struct {
