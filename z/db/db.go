@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/icreateapp-com/go-zLib/z"
+	"github.com/icreateapp-com/go-zLib/z/provider/trace_provider"
+	"github.com/uptrace/opentelemetry-go-extra/otelgorm"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -62,6 +64,10 @@ func (db *db) Init() *db {
 	})
 	if err != nil {
 		z.Error.Fatal("db connect error: ", err.Error())
+	}
+
+	if err := db.Use(otelgorm.NewPlugin(otelgorm.WithTracerProvider(trace_provider.TraceProvider.TracerProvider))); err != nil {
+		z.Error.Fatal("use otelgorm error: ", err.Error())
 	}
 
 	return db

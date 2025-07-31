@@ -1,8 +1,12 @@
-package db
+package crud_service
 
 import (
 	"context"
 	"fmt"
+	"github.com/icreateapp-com/go-zLib/z/db"
+	"github.com/icreateapp-com/go-zLib/z/provider/trace_provider"
+	"github.com/icreateapp-com/go-zLib/z/service/base_service"
+	"go.opentelemetry.io/otel/codes"
 	"reflect"
 	"sync"
 
@@ -10,64 +14,70 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-type ICrudService[T IModel] interface {
-	Get(query ...Query) ([]T, error)
-	Page(query ...Query) (*Pager, error)
-	Find(id interface{}, query ...Query) (*T, error)
+type ICrudService[T db.IModel] interface {
+	Get(query ...db.Query) ([]T, error)
+	Page(query ...db.Query) (*db.Pager, error)
+	Find(id interface{}, query ...db.Query) (*T, error)
 	Create(model *T) (*T, error)
 	Update(id interface{}, model *T) (bool, error)
-	Delete(query ...Query) (bool, error)
-	DeleteByID(id interface{}, query ...Query) (bool, error)
+	Delete(query ...db.Query) (bool, error)
+	DeleteByID(id interface{}, query ...db.Query) (bool, error)
 }
 
-type CrudService[T IModel] struct {
+type CrudService[T db.IModel] struct {
+	base_service.BaseService
 	CreateOnly []string // 创建时允许的字段
 	CreateOmit []string // 创建时忽略的字段
 	UpdateOnly []string // 更新时允许的字段
 	UpdateOmit []string // 更新时忽略的字段
 	Unique     []string // 唯一字段(更新时要忽略更新数据的ID)
+	Context    context.Context
 }
 
 // Get 获取数据列表
-func (s *CrudService[T]) Get(query ...Query) ([]T, error) {
-	q := Query{}
+func (s *CrudService[T]) Get(query ...db.Query) ([]T, error) {
+	q := db.Query{}
 	if len(query) > 0 {
 		q = query[0]
 	}
 	var result []T
-	err := (&QueryBuilder[T]{Query: q}).Get(&result)
+	err := (&db.QueryBuilder[T]{Query: q}).Get(&result)
 	return result, err
 }
 
 // Page 获取数据
-func (s *CrudService[T]) Page(query ...Query) (*Pager, error) {
-	q := Query{}
+func (s *CrudService[T]) Page(query ...db.Query) (*db.Pager, error) {
+	q := db.Query{}
 	if len(query) > 0 {
 		q = query[0]
 	}
-	var pager Pager
-	err := (&QueryBuilder[T]{Query: q}).Page(&pager)
+	var pager db.Pager
+	err := (&db.QueryBuilder[T]{Query: q}).Page(&pager)
 	return &pager, err
 }
 
 // Find 查找数据
-func (s *CrudService[T]) Find(id interface{}, query ...Query) (*T, error) {
-	q := Query{}
+func (s *CrudService[T]) Find(id interface{}, query ...db.Query) (*T, error) {
+	q := db.Query{}
 	if len(query) > 0 {
 		q = query[0]
 	}
 	var result T
-	err := (&QueryBuilder[T]{Query: q}).Find(id, &result)
+	err := (&db.QueryBuilder[T]{Query: q}).Find(id, &result)
 	return &result, err
 }
 
 // Create 创建
 func (s *CrudService[T]) Create(model *T) (*T, error) {
+	// 开启一个新的子 span
+	_, span := trace_provider.TraceProvider.Start(s.Context)
+	defer span.End()
+
 	// 唯一字段检查
 	if err := s.checkUnique(model); err != nil {
 		return nil, err
 	}
-	res, err := CreateBuilder[T]{}.Create(*model, func(tx *gorm.DB) *gorm.DB {
+	res, err := db.CreateBuilder[T]{}.Create(*model, func(tx *gorm.DB) *gorm.DB {
 		if len(s.CreateOnly) > 0 {
 			return tx.Select(s.CreateOnly)
 		}
@@ -76,11 +86,22 @@ func (s *CrudService[T]) Create(model *T) (*T, error) {
 		}
 		return tx
 	})
+
+	// 记录错误
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+
 	return &res, err
 }
 
 // Update 更新
 func (s *CrudService[T]) Update(id interface{}, model *T) (bool, error) {
+	// 开启一个新的子 span
+	_, span := trace_provider.TraceProvider.Start(s.Context)
+	defer span.End()
+
 	if model == nil {
 		return false, fmt.Errorf("model can not be nil")
 	}
@@ -88,7 +109,7 @@ func (s *CrudService[T]) Update(id interface{}, model *T) (bool, error) {
 	if err := s.checkUnique(model, id); err != nil {
 		return false, err
 	}
-	return UpdateBuilder[T]{}.UpdateByID(id, *model, func(tx *gorm.DB) *gorm.DB {
+	res, err := db.UpdateBuilder[T]{}.UpdateByID(id, *model, func(tx *gorm.DB) *gorm.DB {
 		if len(s.UpdateOnly) > 0 {
 			return tx.Select(s.UpdateOnly)
 		}
@@ -97,23 +118,55 @@ func (s *CrudService[T]) Update(id interface{}, model *T) (bool, error) {
 		}
 		return tx
 	})
+
+	// 记录错误
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+
+	return res, err
 }
 
 // Delete 根据查询条件删除数据
-func (s *CrudService[T]) Delete(query ...Query) (bool, error) {
-	q := Query{}
+func (s *CrudService[T]) Delete(query ...db.Query) (bool, error) {
+	// 开启一个新的子 span
+	_, span := trace_provider.TraceProvider.Start(s.Context)
+	defer span.End()
+
+	q := db.Query{}
 	if len(query) > 0 {
 		q = query[0]
 	}
-	return DeleteBuilder[T]{}.Delete(q)
+	res, err := db.DeleteBuilder[T]{}.Delete(q)
+
+	// 记录错误
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+
+	return res, err
 }
 
 // DeleteByID 根据ID删除数据，支持额外的查询条件
-func (s *CrudService[T]) DeleteByID(id interface{}, query ...Query) (bool, error) {
+func (s *CrudService[T]) DeleteByID(id interface{}, query ...db.Query) (bool, error) {
+	// 开启一个新的子 span
+	_, span := trace_provider.TraceProvider.Start(s.Context)
+	defer span.End()
+
 	if len(query) > 0 {
-		return DeleteBuilder[T]{}.DeleteByID(id, query[0])
+		return db.DeleteBuilder[T]{}.DeleteByID(id, query[0])
 	}
-	return DeleteBuilder[T]{}.DeleteByID(id)
+	res, err := db.DeleteBuilder[T]{}.DeleteByID(id)
+
+	// 记录错误
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+
+	return res, err
 }
 
 // checkUnique 检查唯一字段
@@ -124,7 +177,7 @@ func (s *CrudService[T]) checkUnique(model *T, excludeID ...interface{}) error {
 	}
 
 	// 使用 GORM 的 schema 解析来健壮地处理字段
-	sch, err := schema.Parse(model, &sync.Map{}, DB.NamingStrategy)
+	sch, err := schema.Parse(model, &sync.Map{}, db.DB.NamingStrategy)
 	if err != nil {
 		return fmt.Errorf("failed to parse model schema: %w", err)
 	}
@@ -152,7 +205,7 @@ func (s *CrudService[T]) checkUnique(model *T, excludeID ...interface{}) error {
 		}
 
 		// 构建查询
-		query := DB.Model(new(T)).Where(fmt.Sprintf("%s = ?", field.DBName), fieldValue)
+		query := db.DB.Model(new(T)).Where(fmt.Sprintf("%s = ?", field.DBName), fieldValue)
 
 		// 如果是更新操作，则排除当前 ID
 		if len(excludeID) > 0 && excludeID[0] != nil {

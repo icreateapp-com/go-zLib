@@ -8,6 +8,7 @@ import (
 	ut "github.com/go-playground/universal-translator"
 	"github.com/go-playground/validator/v10"
 	entranslations "github.com/go-playground/validator/v10/translations/en"
+	"io"
 	"log"
 	"reflect"
 	"strings"
@@ -37,6 +38,9 @@ func (valid *valid) Init() {
 
 // T 翻译错误
 func (valid *valid) T(err error, req interface{}) string {
+	if io.EOF == err {
+		return "request body is empty"
+	}
 
 	labels := map[string]string{}
 
