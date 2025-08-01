@@ -26,11 +26,11 @@ func (q UpdateBuilder[T]) Update(query Query, values T, customFunc ...func(*gorm
 
 	db, err := ParseSearch(db, query.Search, query.Required)
 	if err != nil {
-		return false, err
+		return false, WrapDBError(err) // 使用错误包装器
 	}
 
 	if err := db.Updates(&values).Error; err != nil {
-		return false, err
+		return false, WrapDBError(err) // 使用错误包装器
 	}
 
 	return true, nil
@@ -40,7 +40,7 @@ func (q UpdateBuilder[T]) UpdateByID(id interface{}, values T, customFunc ...fun
 	queryBuilder := QueryBuilder[T]{TX: q.TX}
 	exists, _ := queryBuilder.ExistsById(id)
 	if !exists {
-		return false, errors.New("row not found")
+		return false, WrapDBError(errors.New("row not found")) // 使用错误包装器
 	}
 
 	// 如果提供了自定义函数，使用直接更新方式
@@ -58,7 +58,7 @@ func (q UpdateBuilder[T]) UpdateByID(id interface{}, values T, customFunc ...fun
 
 		// 添加 ID 条件并执行更新
 		if err := db.Where("id = ?", id).Updates(&values).Error; err != nil {
-			return false, err
+			return false, WrapDBError(err) // 使用错误包装器
 		}
 
 		return true, nil

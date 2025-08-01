@@ -2,6 +2,7 @@ package trace_provider
 
 import (
 	"context"
+	"go.opentelemetry.io/otel/codes"
 	"runtime"
 	"strings"
 	"time"
@@ -112,4 +113,26 @@ func (t *traceProvider) Start(ctx context.Context, args ...interface{}) (context
 	}
 
 	return t.Tracer.Start(ctx, spanName, opts...)
+}
+
+// Error 记录错误信息
+func (t *traceProvider) Error(ctx context.Context, span trace.Span, err error) {
+	// 创建一个带有30秒超时的上下文
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// 使用channel来接收异步操作结果
+	done := make(chan struct{}, 1)
+
+	// 异步执行记录错误的操作
+	go func() {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+	case <-timeoutCtx.Done():
+	}
 }

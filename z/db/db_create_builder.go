@@ -25,7 +25,7 @@ func (q CreateBuilder[T]) Create(values T, customFunc ...func(*gorm.DB) *gorm.DB
 	// 创建一个副本用于数据库操作，确保原始数据不被修改
 	result := values
 	if err := db.Create(&result).Error; err != nil {
-		return zero, err
+		return zero, WrapDBError(err) // 使用错误包装器
 	}
 
 	// 返回包含自动生成字段（如 ID）的结果

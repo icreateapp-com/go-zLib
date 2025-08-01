@@ -17,11 +17,11 @@ func (q DeleteBuilder[T]) Delete(query Query) (bool, error) {
 
 	db, err := ParseSearch(db, query.Search, query.Required)
 	if err != nil {
-		return false, err
+		return false, WrapDBError(err) // 使用错误包装器
 	}
 
 	if err := db.Delete(&zero).Error; err != nil {
-		return false, err
+		return false, WrapDBError(err) // 使用错误包装器
 	}
 
 	return true, nil

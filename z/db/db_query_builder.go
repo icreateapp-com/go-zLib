@@ -77,10 +77,14 @@ func (q *QueryBuilder[T]) Get(dest interface{}) error {
 
 	parsedDB, err := ParseQuery(query, db)
 	if err != nil {
-		return err
+		return WrapDBError(err) // 使用错误包装器
 	}
 
-	return parsedDB.Find(dest).Error
+	if err := parsedDB.Find(dest).Error; err != nil {
+		return WrapDBError(err) // 使用错误包装器
+	}
+
+	return nil
 }
 
 // Page 查询多条记录（带分页）
@@ -104,24 +108,24 @@ func (q *QueryBuilder[T]) Page(pager *Pager) error {
 		Required: query.Required,
 	}, db)
 	if err != nil {
-		return err
+		return WrapDBError(err) // 使用错误包装器
 	}
 
 	var total int64
 	if err := countDB.Count(&total).Error; err != nil {
-		return err
+		return WrapDBError(err) // 使用错误包装器
 	}
 
 	// 再获取分页数据
 	dataDB, err := ParseQuery(query, q.getDBWithModel())
 	if err != nil {
-		return err
+		return WrapDBError(err) // 使用错误包装器
 	}
 
 	// 创建一个用于接收数据的切片
 	var data []T
 	if err := dataDB.Find(&data).Error; err != nil {
-		return err
+		return WrapDBError(err) // 使用错误包装器
 	}
 	pager.Data = data
 
@@ -152,10 +156,14 @@ func (q *QueryBuilder[T]) First(dest interface{}) error {
 
 	parsedDB, err := ParseQuery(query, db)
 	if err != nil {
-		return err
+		return WrapDBError(err) // 使用错误包装器
 	}
 
-	return parsedDB.First(dest).Error
+	if err := parsedDB.First(dest).Error; err != nil {
+		return WrapDBError(err) // 使用错误包装器
+	}
+
+	return nil
 }
 
 // Find 使用主键查找记录
@@ -191,12 +199,12 @@ func (q *QueryBuilder[T]) Count() (int64, error) {
 
 	parsedDB, err := ParseQuery(countQuery, db)
 	if err != nil {
-		return 0, err
+		return 0, WrapDBError(err) // 使用错误包装器
 	}
 
 	var count int64
 	if err := parsedDB.Count(&count).Error; err != nil {
-		return 0, err
+		return 0, WrapDBError(err) // 使用错误包装器
 	}
 
 	return count, nil
@@ -222,12 +230,12 @@ func (q *QueryBuilder[T]) Sum(field string) (float64, error) {
 
 	parsedDB, err := ParseQuery(sumQuery, db)
 	if err != nil {
-		return 0, err
+		return 0, WrapDBError(err) // 使用错误包装器
 	}
 
 	var sum float64
 	if err := parsedDB.Select(fmt.Sprintf("COALESCE(SUM(%s), 0) as sum", DB.F(field))).Row().Scan(&sum); err != nil {
-		return 0, err
+		return 0, WrapDBError(err) // 使用错误包装器
 	}
 
 	return sum, nil
@@ -253,12 +261,12 @@ func (q *QueryBuilder[T]) Avg(field string) (float64, error) {
 
 	parsedDB, err := ParseQuery(avgQuery, db)
 	if err != nil {
-		return 0, err
+		return 0, WrapDBError(err) // 使用错误包装器
 	}
 
 	var avg float64
 	if err := parsedDB.Select(fmt.Sprintf("COALESCE(AVG(%s), 0) as avg", DB.F(field))).Row().Scan(&avg); err != nil {
-		return 0, err
+		return 0, WrapDBError(err) // 使用错误包装器
 	}
 
 	return avg, nil
@@ -268,7 +276,7 @@ func (q *QueryBuilder[T]) Avg(field string) (float64, error) {
 func (q *QueryBuilder[T]) Exists() (bool, error) {
 	count, err := q.Count()
 	if err != nil {
-		return false, err
+		return false, WrapDBError(err) // 使用错误包装器
 	}
 
 	return count > 0, nil
@@ -284,4 +292,29 @@ func (q *QueryBuilder[T]) ExistsById(id interface{}) (bool, error) {
 		},
 	}
 	return (&QueryBuilder[T]{TX: q.TX, Query: query, Model: q.Model}).Exists()
+}
+
+// Preload 预加载关联数据
+func (q *QueryBuilder[T]) Preload(query string, args ...interface{}) *QueryBuilder[T] {
+	// 创建新的 QueryBuilder 实例，避免修改原实例
+	newBuilder := &QueryBuilder[T]{
+		TX:    q.TX,
+		Query: q.Query,
+		Model: q.Model,
+	}
+
+	// 获取数据库连接并应用预加载
+	db := newBuilder.getDBWithModel()
+
+	// 应用预加载条件
+	if len(args) > 0 {
+		db = db.Preload(query, args...)
+	} else {
+		db = db.Preload(query)
+	}
+
+	// 更新事务连接
+	newBuilder.TX = db
+
+	return newBuilder
 }
