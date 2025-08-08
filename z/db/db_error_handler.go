@@ -71,7 +71,7 @@ func WrapDBError(err error) error {
 	// 默认返回通用数据库错误
 	return DBError{
 		Code:    ErrCodeDatabaseError,
-		Message: "Database operation failed",
+		Message: errStr,
 	}
 }
 
