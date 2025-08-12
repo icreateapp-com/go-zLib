@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"sync"
+
 	"github.com/gin-gonic/gin"
 	. "github.com/icreateapp-com/go-zLib/z"
-	"net/url"
 )
 
 type ConfigCenterProviderEnv struct {
@@ -31,6 +33,7 @@ type ConfigCenterProviderEnvNotify struct {
 	Version int64  `json:"version"`
 }
 
+// configCenterProvider 配置中心提供者
 type configCenterProvider struct {
 	version  int64
 	address  string
@@ -38,24 +41,17 @@ type configCenterProvider struct {
 	token    string
 	callback string
 	clientId string
+	mutex    sync.RWMutex // 读写锁保护所有字段
 }
 
-var ConfigCenterProvider configCenterProvider
+// ConfigCenterProvider 全局配置中心提供者实例
+var ConfigCenterProvider = &configCenterProvider{}
 
 // Register 注册配置中心
-// 示例：
-// 配置文件示例：
-// config:
-//
-//	name: example-service
-//	port: 8080
-//	config_center:
-//	  version: 1
-//	  address: http://config-center.example.com
-//	  env_id: env123
-//	  token: token123
-//	  callback: http://example-service.example.com/.well-known/config
 func (c *configCenterProvider) Register() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	var err error
 	c.version, err = Config.Int64("config.config_center.version")
 	if err != nil {
@@ -129,6 +125,7 @@ func (c *configCenterProvider) Register() {
 
 // Sync 同步配置
 func (c *configCenterProvider) Sync() error {
+	// 注意：这里不能加锁，因为Register方法已经加锁了
 	var err error
 
 	headers := map[string]string{"Authorization": c.token}
@@ -169,25 +166,35 @@ func (c *configCenterProvider) Sync() error {
 }
 
 // Middleware 提供中间件来处理配置中心的通知
-// 示例：
-// 当接收到配置中心的通知时，中间件会检查版本并同步配置
-// 请求示例：
-// GET /.well-known/config?id=123&code=env123&version=2
 func (c *configCenterProvider) Middleware() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if ctx.Request.URL.Path == "/.well-known/config" {
 			var notify ConfigCenterProviderEnvNotify
 			if err := ctx.ShouldBindQuery(&notify); err != nil {
-				Error.Println("config center notify error: %s", err.Error())
+				Error.Printf("config center notify error: %s", err.Error())
 			} else {
-				if notify.Version == 0 || notify.Version != c.version {
+				c.mutex.RLock()
+				currentVersion := c.version
+				c.mutex.RUnlock()
+
+				if notify.Version == 0 || notify.Version != currentVersion {
+					c.mutex.Lock()
 					if err := c.Sync(); err != nil {
-						Error.Println("config center sync error: %s", err.Error())
+						Error.Printf("config center sync error: %s", err.Error())
+					} else {
+						Info.Println("config center sync success")
 					}
-					Info.Println("config center sync success")
+					c.mutex.Unlock()
 				}
 			}
 		}
 		ctx.Next()
 	}
+}
+
+// GetVersion 获取当前配置版本
+func (c *configCenterProvider) GetVersion() int64 {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.version
 }

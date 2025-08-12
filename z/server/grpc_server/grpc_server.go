@@ -6,7 +6,7 @@ import (
 	"time"
 
 	. "github.com/icreateapp-com/go-zLib/z"
-	"github.com/icreateapp-com/go-zLib/z/server/grpc_server/grpc_middleware"
+	"github.com/icreateapp-com/go-zLib/z/provider/trace_provider"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -60,8 +60,8 @@ func GrpcServer(registerServices func(*grpc.Server), interceptors ...grpc.UnaryS
 
 	// 添加默认的错误跟踪中间件
 	defaultInterceptors := []grpc.UnaryServerInterceptor{
-		grpc_middleware.RecoveryMiddleware(),     // 恢复中间件
-		grpc_middleware.ErrorTrackerMiddleware(), // 错误跟踪中间件
+		trace_provider.RecoveryMiddleware(),     // 恢复中间件
+		trace_provider.ErrorTrackerMiddleware(), // 错误跟踪中间件
 	}
 
 	// 合并用户提供的拦截器

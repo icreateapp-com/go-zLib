@@ -1,6 +1,7 @@
 package event_bus_provider
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -10,12 +11,13 @@ import (
 
 // Event 表示一个泛型事件
 type Event[T any] struct {
-	Name    string // 事件名称
-	Payload T      // 事件载荷（泛型）
+	Name    string  // 事件名称
+	Payload T       // 事件载荷（泛型）
+	Context context.Context // 上下文
 }
 
 // Listener 是一个泛型处理函数
-type Listener[T any] func(event Event[T])
+type Listener[T any] func(ctx context.Context, event Event[T])
 
 // listenerWrapper 泛型监听器包装器，包含ID和处理函数
 type listenerWrapper[T any] struct {
@@ -70,7 +72,7 @@ func (bus *eventBusProvider[T]) On(eventName string, listener Listener[T]) uint6
 }
 
 // Emit 同步广播事件
-func (bus *eventBusProvider[T]) Emit(eventName string, payload T) {
+func (bus *eventBusProvider[T]) Emit(ctx context.Context, eventName string, payload T) {
 	// 验证事件名称
 	if eventName == "" {
 		return
@@ -80,7 +82,7 @@ func (bus *eventBusProvider[T]) Emit(eventName string, payload T) {
 	defer bus.lock.RUnlock()
 
 	wrappers := bus.listeners[eventName]
-	event := Event[T]{Name: eventName, Payload: payload}
+	event := Event[T]{Name: eventName, Payload: payload, Context: ctx}
 
 	for _, wrapper := range wrappers {
 		// 添加 panic 恢复机制
@@ -90,13 +92,13 @@ func (bus *eventBusProvider[T]) Emit(eventName string, payload T) {
 					z.Error.Printf("Panic in event listener: %v", r)
 				}
 			}()
-			w.listener(e)
+			w.listener(ctx, e)
 		}(wrapper, event)
 	}
 }
 
 // EmitAsync 异步广播事件
-func (bus *eventBusProvider[T]) EmitAsync(eventName string, payload T) {
+func (bus *eventBusProvider[T]) EmitAsync(ctx context.Context, eventName string, payload T) {
 	// 验证事件名称
 	if eventName == "" {
 		return
@@ -106,7 +108,7 @@ func (bus *eventBusProvider[T]) EmitAsync(eventName string, payload T) {
 	defer bus.lock.RUnlock()
 
 	wrappers := bus.listeners[eventName]
-	event := Event[T]{Name: eventName, Payload: payload}
+	event := Event[T]{Name: eventName, Payload: payload, Context: ctx}
 
 	for _, wrapper := range wrappers {
 		go func(w *listenerWrapper[T], e Event[T]) {
@@ -116,7 +118,7 @@ func (bus *eventBusProvider[T]) EmitAsync(eventName string, payload T) {
 					z.Error.Printf("Panic in event listener: %v", r)
 				}
 			}()
-			w.listener(e)
+			w.listener(ctx, e)
 		}(wrapper, event)
 	}
 }
@@ -194,7 +196,7 @@ func (bus *eventBusProvider[T]) ClearEvent(eventName string) {
 // ===== 便捷的全局方法（支持泛型） =====
 
 // On 订阅事件（全局便捷方法，支持泛型）
-func On[T any](eventName string, listener func(event Event[T])) uint64 {
+func On[T any](eventName string, listener func(ctx context.Context, event Event[T])) uint64 {
 	// 为每种类型创建独立的事件总线实例
 	bus := getOrCreateTypedBus[T]()
 	return bus.On(eventName, listener)
@@ -207,15 +209,15 @@ func Off[T any](eventName string, listenerID uint64) bool {
 }
 
 // Emit 发布事件（全局便捷方法，支持泛型）
-func Emit[T any](eventName string, payload T) {
+func Emit[T any](ctx context.Context, eventName string, payload T) {
 	bus := getOrCreateTypedBus[T]()
-	bus.Emit(eventName, payload)
+	bus.Emit(ctx, eventName, payload)
 }
 
 // EmitAsync 异步发布事件（全局便捷方法，支持泛型）
-func EmitAsync[T any](eventName string, payload T) {
+func EmitAsync[T any](ctx context.Context, eventName string, payload T) {
 	bus := getOrCreateTypedBus[T]()
-	bus.EmitAsync(eventName, payload)
+	bus.EmitAsync(ctx, eventName, payload)
 }
 
 // GetListeners 获取指定事件的监听器数量（全局便捷方法）

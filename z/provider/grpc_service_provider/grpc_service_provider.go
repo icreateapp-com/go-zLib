@@ -3,37 +3,30 @@ package grpc_service_provider
 import (
 	"fmt"
 	"net"
+	"sync"
 
 	. "github.com/icreateapp-com/go-zLib/z"
 	"google.golang.org/grpc"
 )
 
+// grpcServiceProvider gRPC服务提供者
 type grpcServiceProvider struct {
 	server *grpc.Server
+	mutex  sync.RWMutex // 读写锁保护server字段
 }
 
-var GrpcServiceProvider grpcServiceProvider
+// GrpcServiceProvider 全局gRPC服务提供者实例
+var GrpcServiceProvider = &grpcServiceProvider{}
 
-// Register 服务注册
-// 该方法用于注册gRPC服务并启动gRPC服务器。
-// 使用示例：
-//
-//	provider.GrpcServiceProvider.Register(func(server *grpc.Server) {
-//	    pb.RegisterYourServiceServer(server, &yourService{})
-//	})
-//
-// 配置文件例子：
-// config:
-//
-//	grpc:
-//	  host: "0.0.0.0"
-//	  port: 7000
+// Register 注册gRPC服务并启动服务器
 func (s *grpcServiceProvider) Register(services func(server *grpc.Server)) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
-	// create grpc server
+	// 创建gRPC服务器
 	s.server = grpc.NewServer()
 
-	// get address config
+	// 获取地址配置
 	address := "0.0.0.0:7000"
 	host, _ := Config.String("config.grpc.host")
 	port, _ := Config.Int("config.grpc.port")
@@ -42,10 +35,10 @@ func (s *grpcServiceProvider) Register(services func(server *grpc.Server)) {
 		address = fmt.Sprintf("%s:%d", host, port)
 	}
 
-	// register services
+	// 注册服务
 	services(s.server)
 
-	// start server
+	// 启动服务器
 	go func() {
 		listener, err := net.Listen("tcp", address)
 		if err != nil {

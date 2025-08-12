@@ -2,16 +2,17 @@ package z
 
 import (
 	"errors"
+	"io"
+	"log"
+	"reflect"
+	"strings"
+
 	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/locales/en"
 	"github.com/go-playground/locales/zh"
 	ut "github.com/go-playground/universal-translator"
 	"github.com/go-playground/validator/v10"
 	entranslations "github.com/go-playground/validator/v10/translations/en"
-	"io"
-	"log"
-	"reflect"
-	"strings"
 )
 
 var (
@@ -64,7 +65,7 @@ func (valid *valid) T(err error, req interface{}) string {
 			label := labels[field]
 
 			if len(label) < 1 {
-				label = field
+				label = strings.ToLower(field)
 			}
 
 			return strings.Replace(err, field, label, -1)

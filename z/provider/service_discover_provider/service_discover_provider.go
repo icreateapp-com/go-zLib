@@ -3,12 +3,14 @@ package service_discover_provider
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
 	. "github.com/icreateapp-com/go-zLib/z"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"net/url"
-	"strings"
-	"time"
 )
 
 type ServiceDiscoverServiceInfo struct {
@@ -41,6 +43,7 @@ type ServiceRequestParam struct {
 	Headers map[string]string
 }
 
+// serviceDiscoverProvider 服务发现提供者
 type serviceDiscoverProvider struct {
 	AutoCheck       bool
 	CheckInterval   int
@@ -48,27 +51,13 @@ type serviceDiscoverProvider struct {
 	CacheService    map[string]ServiceDiscoverServiceInfo
 	CacheExpiration map[string]time.Time
 	CacheTTL        int
+	mutex           sync.RWMutex // 读写锁保护缓存字段
 }
 
-var ServiceDiscoverProvider serviceDiscoverProvider
+// ServiceDiscoverProvider 全局服务发现提供者实例
+var ServiceDiscoverProvider = &serviceDiscoverProvider{}
 
 // Register 服务注册
-// 示例：
-// 在配置文件中添加以下配置项：
-// config:
-//
-//	service_discover:
-//	  address: "http://localhost:8080"
-//	  apikey: "your_api_key"
-//	  cache_ttl: 300
-//	  check: true
-//	  check_interval: 5
-//	  lost_timeout: 10
-//	name: "your_service_name"
-//	port: 8081
-//	auth:
-//	  token1: "value1"
-//	  token2: "value2"
 func (s *serviceDiscoverProvider) Register() {
 	// 初始化缓存
 	s.CacheService = make(map[string]ServiceDiscoverServiceInfo)
@@ -254,10 +243,13 @@ func (s *serviceDiscoverProvider) GetAllServiceAddress(name string) (*[]ServiceD
 func (s *serviceDiscoverProvider) GetBestServiceAddress(name string) (*ServiceDiscoverServiceInfo, error) {
 	// 从缓存中获取服务信息
 	if s.CacheTTL > 0 {
-		if cachedService, ok := s.CacheService[name]; ok {
-			if expiration, expOk := s.CacheExpiration[name]; expOk && time.Now().Before(expiration) {
-				return &cachedService, nil
-			}
+		s.mutex.RLock()
+		cachedService, ok := s.CacheService[name]
+		expiration, expOk := s.CacheExpiration[name]
+		s.mutex.RUnlock()
+
+		if ok && expOk && time.Now().Before(expiration) {
+			return &cachedService, nil
 		}
 	}
 
@@ -289,8 +281,10 @@ func (s *serviceDiscoverProvider) GetBestServiceAddress(name string) (*ServiceDi
 	}
 
 	if s.CacheTTL > 0 {
+		s.mutex.Lock()
 		s.CacheService[name] = response.Message
 		s.CacheExpiration[name] = time.Now().Add(time.Duration(s.CacheTTL) * time.Second)
+		s.mutex.Unlock()
 	}
 
 	return &response.Message, nil

@@ -6,79 +6,130 @@ import (
 	"reflect"
 	"sync"
 
+	"github.com/icreateapp-com/go-zLib/z"
+	"gorm.io/gorm"
+
 	"github.com/icreateapp-com/go-zLib/z/db"
 	"github.com/icreateapp-com/go-zLib/z/provider/trace_provider"
 	"github.com/icreateapp-com/go-zLib/z/service/base_service"
-
-	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
 
-type ICrudService[T db.IModel] interface {
-	Get(query ...db.Query) ([]T, error)
+// ICrudService defines the interface for a generic CRUD service.
+type ICrudService[TModel db.IModel, TCreateRequest any, TUpdateRequest any, TResponse any] interface {
+	Get(query ...db.Query) ([]TResponse, error)
 	Page(query ...db.Query) (*db.Pager, error)
-	Find(id interface{}, query ...db.Query) (*T, error)
-	Create(model *T) (*T, error)
-	Update(id interface{}, model *T) (bool, error)
+	Find(id interface{}, query ...db.Query) (*TResponse, error)
+	Create(req *TCreateRequest) (*TResponse, error)
+	Update(id interface{}, req *TUpdateRequest) (*TResponse, error)
 	Delete(query ...db.Query) (bool, error)
 	DeleteByID(id interface{}, query ...db.Query) (bool, error)
 }
 
-type CrudService[T db.IModel] struct {
+// CrudService 是一个通用的 CRUD 服务，支持自定义请求和响应类型
+type CrudService[TModel db.IModel, TCreateRequest any, TUpdateRequest any, TResponse any] struct {
 	base_service.BaseService
-	CreateOnly   []string   // 创建时允许的字段
-	CreateOmit   []string   // 创建时忽略的字段
-	UpdateOnly   []string   // 更新时允许的字段
-	UpdateOmit   []string   // 更新时忽略的字段
-	Unique       []string   // 单字段唯一性(每个字段独立唯一)
-	UniqueGroups [][]string // 组合唯一性(每个数组内的字段组合唯一)
+	CreateOnly   []string                                                    // 创建时允许的字段
+	CreateOmit   []string                                                    // 创建时忽略的字段
+	UpdateOnly   []string                                                    // 更新时允许的字段
+	UpdateOmit   []string                                                    // 更新时忽略的字段
+	Unique       []string                                                    // 单字段唯一性(每个字段独立唯一)
+	UniqueGroups [][]string                                                  // 组合唯一性(每个数组内的字段组合唯一)
+	BeforeCreate func(ctx context.Context, req *TCreateRequest, model *TModel) error // 创建前的钩子函数
+	BeforeUpdate func(ctx context.Context, req *TUpdateRequest, model *TModel) error // 更新前的钩子函数
+	BeforeDelete func(ctx context.Context, query db.Query) error                     // 删除前的钩子函数
+	AfterCreated func(ctx context.Context, req *TCreateRequest, model *TModel, response *TResponse) error // 创建后的钩子函数
+	AfterUpdated func(ctx context.Context, req *TUpdateRequest, model *TModel, response *TResponse) error // 更新后的钩子函数
+	AfterDeleted func(ctx context.Context, query db.Query, success bool) error                            // 删除后的钩子函数
 	Context      context.Context
 }
 
 // Get 获取数据列表
-func (s *CrudService[T]) Get(query ...db.Query) ([]T, error) {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) Get(query ...db.Query) ([]TResponse, error) {
 	q := db.Query{}
 	if len(query) > 0 {
 		q = query[0]
 	}
-	var result []T
-	err := (&db.QueryBuilder[T]{Query: q}).Get(&result)
-	return result, err
+	var result []TModel
+	if err := (&db.QueryBuilder[TModel]{Query: q}).Get(&result); err != nil {
+		return nil, err
+	}
+	var response []TResponse
+	if err := z.ToStruct(result, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // Page 获取数据
-func (s *CrudService[T]) Page(query ...db.Query) (*db.Pager, error) {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) Page(query ...db.Query) (*db.Pager, error) {
 	q := db.Query{}
 	if len(query) > 0 {
 		q = query[0]
 	}
 	var pager db.Pager
-	err := (&db.QueryBuilder[T]{Query: q}).Page(&pager)
-	return &pager, err
+	if err := (&db.QueryBuilder[TModel]{Query: q}).Page(&pager); err != nil {
+		return nil, err
+	}
+
+	// 获取 records 字段
+	records, ok := pager.Data.([]TModel)
+	if !ok {
+		return &pager, nil // 如果转换失败，直接返回原始结果
+	}
+
+	// 转换为安全的响应结构体列表
+	responseList := make([]TResponse, len(records))
+	for i, record := range records {
+		z.ToStruct(record, &responseList[i])
+	}
+
+	// 替换 Data 字段
+	pager.Data = responseList
+
+	return &pager, nil
 }
 
 // Find 查找数据
-func (s *CrudService[T]) Find(id interface{}, query ...db.Query) (*T, error) {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) Find(id interface{}, query ...db.Query) (*TResponse, error) {
 	q := db.Query{}
 	if len(query) > 0 {
 		q = query[0]
 	}
-	var result T
-	err := (&db.QueryBuilder[T]{Query: q}).Find(id, &result)
-	return &result, err
+	var result TModel
+	if err := (&db.QueryBuilder[TModel]{Query: q}).Find(id, &result); err != nil {
+		return nil, err
+	}
+	var response TResponse
+	if err := z.ToStruct(result, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
 }
 
 // Create 创建
-func (s *CrudService[T]) Create(model *T) (*T, error) {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) Create(req *TCreateRequest) (*TResponse, error) {
 	// 开启一个新的子 span
-	ctx, span := trace_provider.TraceProvider.Start(s.Context)
+	_, span := trace_provider.TraceProvider.Start(s.Context)
 	defer span.End()
 
+	var model TModel
+	if err := z.ToStruct(req, &model); err != nil {
+		return nil, trace_provider.TraceProvider.Error(span, err)
+	}
+
+	// 执行创建前的钩子函数
+	if s.BeforeCreate != nil {
+		if err := s.BeforeCreate(s.Context, req, &model); err != nil {
+			return nil, trace_provider.TraceProvider.Error(span, err)
+		}
+	}
+
 	// 唯一字段检查
-	if err := s.checkUnique(model); err != nil {
+	if err := s.checkUnique(&model); err != nil {
 		return nil, err
 	}
-	res, err := db.CreateBuilder[T]{}.Create(*model, func(tx *gorm.DB) *gorm.DB {
+	result, err := db.CreateBuilder[TModel]{}.Create(model, func(tx *gorm.DB) *gorm.DB {
 		if len(s.CreateOnly) > 0 {
 			return tx.Select(s.CreateOnly)
 		}
@@ -90,26 +141,51 @@ func (s *CrudService[T]) Create(model *T) (*T, error) {
 
 	// 记录错误
 	if err != nil {
-		trace_provider.TraceProvider.Error(ctx, span, err)
+		return nil, trace_provider.TraceProvider.Error(span, err)
 	}
 
-	return &res, err
+	var response TResponse
+	if err := z.ToStruct(result, &response); err != nil {
+		return nil, trace_provider.TraceProvider.Error(span, err)
+	}
+
+	// 执行创建后的钩子函数
+	if s.AfterCreated != nil {
+		if err := s.AfterCreated(s.Context, req, &model, &response); err != nil {
+			return nil, trace_provider.TraceProvider.Error(span, err)
+		}
+	}
+
+	return &response, err
 }
 
 // Update 更新
-func (s *CrudService[T]) Update(id interface{}, model *T) (bool, error) {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) Update(id interface{}, req *TUpdateRequest) (*TResponse, error) {
 	// 开启一个新的子 span
-	ctx, span := trace_provider.TraceProvider.Start(s.Context)
+	_, span := trace_provider.TraceProvider.Start(s.Context)
 	defer span.End()
 
-	if model == nil {
-		return false, fmt.Errorf("model can not be nil")
+	if req == nil {
+		return nil, fmt.Errorf("request can not be nil")
 	}
+
+	var model TModel
+	if err := z.ToStruct(req, &model); err != nil {
+		return nil, trace_provider.TraceProvider.Error(span, err)
+	}
+
+	// 执行更新前的钩子函数
+	if s.BeforeUpdate != nil {
+		if err := s.BeforeUpdate(s.Context, req, &model); err != nil {
+			return nil, trace_provider.TraceProvider.Error(span, err)
+		}
+	}
+
 	// 唯一字段检查
-	if err := s.checkUnique(model, id); err != nil {
-		return false, err
+	if err := s.checkUnique(&model, id); err != nil {
+		return nil, err
 	}
-	res, err := db.UpdateBuilder[T]{}.UpdateByID(id, *model, func(tx *gorm.DB) *gorm.DB {
+	_, err := db.UpdateBuilder[TModel]{}.UpdateByID(id, model, func(tx *gorm.DB) *gorm.DB {
 		if len(s.UpdateOnly) > 0 {
 			return tx.Select(s.UpdateOnly)
 		}
@@ -121,53 +197,103 @@ func (s *CrudService[T]) Update(id interface{}, model *T) (bool, error) {
 
 	// 记录错误
 	if err != nil {
-		trace_provider.TraceProvider.Error(ctx, span, err)
+		return nil, trace_provider.TraceProvider.Error(span, err)
 	}
 
-	return res, err
+	// 获取更新后的用户信息
+	updatedUser, err := s.Find(id)
+	if err != nil {
+		return nil, trace_provider.TraceProvider.Error(span, err)
+	}
+
+	// 执行更新后的钩子函数
+	if s.AfterUpdated != nil {
+		if err := s.AfterUpdated(s.Context, req, &model, updatedUser); err != nil {
+			return nil, trace_provider.TraceProvider.Error(span, err)
+		}
+	}
+
+	return updatedUser, nil
 }
 
 // Delete 根据查询条件删除数据
-func (s *CrudService[T]) Delete(query ...db.Query) (bool, error) {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) Delete(query ...db.Query) (bool, error) {
 	// 开启一个新的子 span
-	ctx, span := trace_provider.TraceProvider.Start(s.Context)
+	_, span := trace_provider.TraceProvider.Start(s.Context)
 	defer span.End()
 
 	q := db.Query{}
 	if len(query) > 0 {
 		q = query[0]
 	}
-	res, err := db.DeleteBuilder[T]{}.Delete(q)
+
+	// 执行删除前的钩子函数
+	if s.BeforeDelete != nil {
+		if err := s.BeforeDelete(s.Context, q); err != nil {
+			return false, trace_provider.TraceProvider.Error(span, err)
+		}
+	}
+
+	res, err := db.DeleteBuilder[TModel]{}.Delete(q)
 
 	// 记录错误
 	if err != nil {
-		trace_provider.TraceProvider.Error(ctx, span, err)
+		trace_provider.TraceProvider.Error(span, err)
+	}
+
+	// 执行删除后的钩子函数
+	if s.AfterDeleted != nil {
+		if hookErr := s.AfterDeleted(s.Context, q, res); hookErr != nil {
+			trace_provider.TraceProvider.Error(span, hookErr)
+		}
 	}
 
 	return res, err
 }
 
 // DeleteByID 根据ID删除数据，支持额外的查询条件
-func (s *CrudService[T]) DeleteByID(id interface{}, query ...db.Query) (bool, error) {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) DeleteByID(id interface{}, query ...db.Query) (bool, error) {
 	// 开启一个新的子 span
-	ctx, span := trace_provider.TraceProvider.Start(s.Context)
+	_, span := trace_provider.TraceProvider.Start(s.Context)
 	defer span.End()
 
+	q := db.Query{}
 	if len(query) > 0 {
-		return db.DeleteBuilder[T]{}.DeleteByID(id, query[0])
+		q = query[0]
 	}
-	res, err := db.DeleteBuilder[T]{}.DeleteByID(id)
+
+	// 执行删除前的钩子函数
+	if s.BeforeDelete != nil {
+		if err := s.BeforeDelete(s.Context, q); err != nil {
+			return false, trace_provider.TraceProvider.Error(span, err)
+		}
+	}
+
+	var res bool
+	var err error
+	if len(query) > 0 {
+		res, err = db.DeleteBuilder[TModel]{}.DeleteByID(id, query[0])
+	} else {
+		res, err = db.DeleteBuilder[TModel]{}.DeleteByID(id)
+	}
 
 	// 记录错误
 	if err != nil {
-		trace_provider.TraceProvider.Error(ctx, span, err)
+		trace_provider.TraceProvider.Error(span, err)
+	}
+
+	// 执行删除后的钩子函数
+	if s.AfterDeleted != nil {
+		if hookErr := s.AfterDeleted(s.Context, q, res); hookErr != nil {
+			trace_provider.TraceProvider.Error(span, hookErr)
+		}
 	}
 
 	return res, err
 }
 
 // checkUnique 检查唯一字段（支持单字段和组合唯一性）
-func (s *CrudService[T]) checkUnique(model *T, excludeID ...interface{}) error {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) checkUnique(model *TModel, excludeID ...interface{}) error {
 	// 如果没有设置唯一字段或者模型为空，则直接返回
 	if (len(s.Unique) == 0 && len(s.UniqueGroups) == 0) || model == nil {
 		return nil
@@ -199,7 +325,7 @@ func (s *CrudService[T]) checkUnique(model *T, excludeID ...interface{}) error {
 }
 
 // checkSingleFieldUnique 检查单字段唯一性
-func (s *CrudService[T]) checkSingleFieldUnique(sch *schema.Schema, modelValue reflect.Value, fieldName string, excludeID ...interface{}) error {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) checkSingleFieldUnique(sch *schema.Schema, modelValue reflect.Value, fieldName string, excludeID ...interface{}) error {
 	// 优先按结构体字段名查找
 	field := sch.LookUpField(fieldName)
 	if field == nil {
@@ -220,7 +346,7 @@ func (s *CrudService[T]) checkSingleFieldUnique(sch *schema.Schema, modelValue r
 	}
 
 	// 构建查询
-	query := db.DB.Model(new(T)).Where(fmt.Sprintf("%s = ?", field.DBName), fieldValue)
+	query := db.DB.Model(new(TModel)).Where(fmt.Sprintf("%s = ?", field.DBName), fieldValue)
 
 	// 如果是更新操作，则排除当前 ID
 	if len(excludeID) > 0 && excludeID[0] != nil {
@@ -249,9 +375,9 @@ func (s *CrudService[T]) checkSingleFieldUnique(sch *schema.Schema, modelValue r
 }
 
 // checkGroupUnique 检查组合唯一性
-func (s *CrudService[T]) checkGroupUnique(sch *schema.Schema, modelValue reflect.Value, group []string, excludeID ...interface{}) error {
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) checkGroupUnique(sch *schema.Schema, modelValue reflect.Value, group []string, excludeID ...interface{}) error {
 	// 构建组合唯一性查询
-	query := db.DB.Model(new(T))
+	query := db.DB.Model(new(TModel))
 	var whereConditions []string
 	var whereValues []interface{}
 	var fieldNames []string

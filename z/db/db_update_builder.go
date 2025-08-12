@@ -1,13 +1,55 @@
 package db
 
 import (
+	"context"
 	"errors"
 
 	"gorm.io/gorm"
 )
 
+// rawUpdateCondition 原生条件
+type rawUpdateCondition struct {
+	query string        // SQL 查询条件
+	args  []interface{} // 查询参数
+}
+
 type UpdateBuilder[T IModel] struct {
-	TX *gorm.DB
+	TX            *gorm.DB             // 事务支持
+	Context       context.Context      // 上下文
+	rawConditions []rawUpdateCondition // 原生条件
+}
+
+// WithContext 设置上下文
+func (q *UpdateBuilder[T]) WithContext(ctx context.Context) *UpdateBuilder[T] {
+	newBuilder := q.clone()
+	newBuilder.Context = ctx
+	return newBuilder
+}
+
+// Where 添加 WHERE 条件
+func (q *UpdateBuilder[T]) Where(query string, args ...interface{}) *UpdateBuilder[T] {
+	newBuilder := q.clone()
+	newBuilder.rawConditions = append(newBuilder.rawConditions, rawUpdateCondition{
+		query: query,
+		args:  args,
+	})
+	return newBuilder
+}
+
+// clone 克隆 UpdateBuilder 实例
+func (q *UpdateBuilder[T]) clone() *UpdateBuilder[T] {
+	newBuilder := &UpdateBuilder[T]{
+		TX:      q.TX,
+		Context: q.Context,
+	}
+
+	// 深拷贝 rawConditions
+	if len(q.rawConditions) > 0 {
+		newBuilder.rawConditions = make([]rawUpdateCondition, len(q.rawConditions))
+		copy(newBuilder.rawConditions, q.rawConditions)
+	}
+
+	return newBuilder
 }
 
 func (q UpdateBuilder[T]) Update(query Query, values T, customFunc ...func(*gorm.DB) *gorm.DB) (bool, error) {
@@ -17,6 +59,16 @@ func (q UpdateBuilder[T]) Update(query Query, values T, customFunc ...func(*gorm
 		db = q.TX.Model(&zero)
 	} else {
 		db = DB.Model(&zero)
+	}
+
+	// 应用上下文
+	if q.Context != nil {
+		db = db.WithContext(q.Context)
+	}
+
+	// 应用原生条件
+	for _, condition := range q.rawConditions {
+		db = db.Where(condition.query, condition.args...)
 	}
 
 	// 应用自定义函数（如 Select、Omit 等）
@@ -37,7 +89,10 @@ func (q UpdateBuilder[T]) Update(query Query, values T, customFunc ...func(*gorm
 }
 
 func (q UpdateBuilder[T]) UpdateByID(id interface{}, values T, customFunc ...func(*gorm.DB) *gorm.DB) (bool, error) {
-	queryBuilder := QueryBuilder[T]{TX: q.TX}
+	queryBuilder := QueryBuilder[T]{
+		TX:      q.TX,
+		Context: q.Context,
+	}
 	exists, _ := queryBuilder.ExistsById(id)
 	if !exists {
 		return false, WrapDBError(errors.New("row not found")) // 使用错误包装器
@@ -51,6 +106,16 @@ func (q UpdateBuilder[T]) UpdateByID(id interface{}, values T, customFunc ...fun
 			db = q.TX.Model(&zero)
 		} else {
 			db = DB.Model(&zero)
+		}
+
+		// 应用上下文
+		if q.Context != nil {
+			db = db.WithContext(q.Context)
+		}
+
+		// 应用原生条件
+		for _, condition := range q.rawConditions {
+			db = db.Where(condition.query, condition.args...)
 		}
 
 		// 应用自定义函数（如 Select、Omit 等）
@@ -72,5 +137,13 @@ func (q UpdateBuilder[T]) UpdateByID(id interface{}, values T, customFunc ...fun
 			},
 		},
 	}
-	return q.Update(query, values)
+
+	// 创建新的 UpdateBuilder，保持所有字段
+	newBuilder := UpdateBuilder[T]{
+		TX:            q.TX,
+		Context:       q.Context,
+		rawConditions: q.rawConditions,
+	}
+
+	return newBuilder.Update(query, values)
 }

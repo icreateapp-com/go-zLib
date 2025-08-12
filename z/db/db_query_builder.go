@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -13,17 +14,60 @@ const (
 	DefaultPageSize = 10
 )
 
+// rawCondition 原生条件
+type rawCondition struct {
+	query string        // SQL 查询条件
+	args  []interface{} // 查询参数
+}
+
 // QueryBuilder 查询构建器
 type QueryBuilder[T any] struct {
-	TX    *gorm.DB    // 事务支持
-	Query Query       // 查询参数
-	Model interface{} // 显式设置查询模型
+	TX            *gorm.DB        // 事务支持
+	Query         Query           // 查询参数
+	Model         interface{}     // 显式设置查询模型
+	Context       context.Context // 上下文
+	rawConditions []rawCondition  // 原生条件
 }
 
 // SetModel 设置查询模型
 func (q *QueryBuilder[T]) SetModel(model interface{}) *QueryBuilder[T] {
 	q.Model = model
 	return q
+}
+
+// WithContext 设置上下文
+func (q *QueryBuilder[T]) WithContext(ctx context.Context) *QueryBuilder[T] {
+	newBuilder := q.clone()
+	newBuilder.Context = ctx
+	return newBuilder
+}
+
+// Where 添加 WHERE 条件
+func (q *QueryBuilder[T]) Where(query string, args ...interface{}) *QueryBuilder[T] {
+	newBuilder := q.clone()
+	newBuilder.rawConditions = append(newBuilder.rawConditions, rawCondition{
+		query: query,
+		args:  args,
+	})
+	return newBuilder
+}
+
+// clone 克隆 QueryBuilder 实例
+func (q *QueryBuilder[T]) clone() *QueryBuilder[T] {
+	newBuilder := &QueryBuilder[T]{
+		TX:      q.TX,
+		Query:   q.Query,
+		Model:   q.Model,
+		Context: q.Context,
+	}
+
+	// 深拷贝 rawConditions
+	if len(q.rawConditions) > 0 {
+		newBuilder.rawConditions = make([]rawCondition, len(q.rawConditions))
+		copy(newBuilder.rawConditions, q.rawConditions)
+	}
+
+	return newBuilder
 }
 
 // Query 查询参数
@@ -66,7 +110,19 @@ func (q *QueryBuilder[T]) getDBWithModel() *gorm.DB {
 	if model == nil {
 		model = new(T)
 	}
-	return db.Model(model)
+	db = db.Model(model)
+
+	// 应用上下文
+	if q.Context != nil {
+		db = db.WithContext(q.Context)
+	}
+
+	// 应用原生条件
+	for _, condition := range q.rawConditions {
+		db = db.Where(condition.query, condition.args...)
+	}
+
+	return db
 }
 
 // Get 查询多条记录
@@ -182,7 +238,16 @@ func (q *QueryBuilder[T]) Find(id interface{}, dest interface{}) error {
 	}
 	newQuery.Search = append(newQuery.Search, idCondition)
 
-	return (&QueryBuilder[T]{TX: q.TX, Query: newQuery, Model: q.Model}).First(dest)
+	// 创建新的 QueryBuilder，保持所有字段
+	newBuilder := &QueryBuilder[T]{
+		TX:            q.TX,
+		Query:         newQuery,
+		Model:         q.Model,
+		Context:       q.Context,
+		rawConditions: q.rawConditions,
+	}
+
+	return newBuilder.First(dest)
 }
 
 // Count 统计记录数量
@@ -291,17 +356,20 @@ func (q *QueryBuilder[T]) ExistsById(id interface{}) (bool, error) {
 			},
 		},
 	}
-	return (&QueryBuilder[T]{TX: q.TX, Query: query, Model: q.Model}).Exists()
+	newBuilder := &QueryBuilder[T]{
+		TX:            q.TX,
+		Query:         query,
+		Model:         q.Model,
+		Context:       q.Context,
+		rawConditions: q.rawConditions,
+	}
+	return newBuilder.Exists()
 }
 
 // Preload 预加载关联数据
 func (q *QueryBuilder[T]) Preload(query string, args ...interface{}) *QueryBuilder[T] {
 	// 创建新的 QueryBuilder 实例，避免修改原实例
-	newBuilder := &QueryBuilder[T]{
-		TX:    q.TX,
-		Query: q.Query,
-		Model: q.Model,
-	}
+	newBuilder := q.clone()
 
 	// 获取数据库连接并应用预加载
 	db := newBuilder.getDBWithModel()

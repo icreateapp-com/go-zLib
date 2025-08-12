@@ -89,7 +89,7 @@ func (e *StreamSender) Done() {
 	}
 
 	if _, err := e.Context.Writer.Write([]byte("\n\n")); err != nil {
-		Error.Println("stream error: %v", err)
+		Error.Printf("stream error: %v", err)
 		return
 	}
 

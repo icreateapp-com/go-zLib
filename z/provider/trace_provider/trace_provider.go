@@ -2,10 +2,11 @@ package trace_provider
 
 import (
 	"context"
-	"go.opentelemetry.io/otel/codes"
 	"runtime"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/codes"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -25,7 +26,7 @@ type traceProvider struct {
 	Tracer         trace.Tracer
 }
 
-// TraceProvider 全局链路追踪服务
+// TraceProvider 全局链路追踪提供者实例
 var TraceProvider = &traceProvider{}
 
 // Init 初始化链路追踪服务
@@ -41,7 +42,7 @@ func (t *traceProvider) Init() {
 
 	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithInsecure(), otlptracegrpc.WithEndpoint(Config.GetString("config.observe.trace.jaeger.endpoint")), otlptracegrpc.WithDialOption(grpc.WithBlock()))
 	if err != nil {
-		Error.Fatalln("failed to create trace exporter: %v", err)
+		Error.Fatalf("failed to create trace exporter: %v", err)
 	}
 
 	// 创建一个新的 TracerProvider
@@ -116,9 +117,9 @@ func (t *traceProvider) Start(ctx context.Context, args ...interface{}) (context
 }
 
 // Error 记录错误信息并返回错误
-func (t *traceProvider) Error(ctx context.Context, span trace.Span, err error) error {
+func (t *traceProvider) Error(span trace.Span, err error) error {
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
-	
+
 	return err
 }
