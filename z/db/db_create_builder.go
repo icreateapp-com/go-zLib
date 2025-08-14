@@ -12,9 +12,9 @@ type rawCreateCondition struct {
 }
 
 type CreateBuilder[T IModel] struct {
-	TX            *gorm.DB               // 事务支持
-	Context       context.Context        // 上下文
-	rawConditions []rawCreateCondition   // 原生条件
+	TX            *gorm.DB             // 事务支持
+	Context       context.Context      // 上下文
+	rawConditions []rawCreateCondition // 原生条件
 }
 
 // WithContext 设置上下文
@@ -40,13 +40,13 @@ func (q *CreateBuilder[T]) clone() *CreateBuilder[T] {
 		TX:      q.TX,
 		Context: q.Context,
 	}
-	
+
 	// 深拷贝 rawConditions
 	if len(q.rawConditions) > 0 {
 		newBuilder.rawConditions = make([]rawCreateCondition, len(q.rawConditions))
 		copy(newBuilder.rawConditions, q.rawConditions)
 	}
-	
+
 	return newBuilder
 }
 
@@ -79,7 +79,7 @@ func (q CreateBuilder[T]) Create(values T, customFunc ...func(*gorm.DB) *gorm.DB
 	// 创建一个副本用于数据库操作，确保原始数据不被修改
 	result := values
 	if err := db.Create(&result).Error; err != nil {
-		return zero, WrapDBError(err) // 使用错误包装器
+		return zero, WrapDBError(err)
 	}
 
 	// 返回包含自动生成字段（如 ID）的结果

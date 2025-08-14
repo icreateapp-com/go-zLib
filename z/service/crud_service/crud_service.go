@@ -18,7 +18,7 @@ import (
 // ICrudService defines the interface for a generic CRUD service.
 type ICrudService[TModel db.IModel, TCreateRequest any, TUpdateRequest any, TResponse any] interface {
 	Get(query ...db.Query) ([]TResponse, error)
-	Page(query ...db.Query) (*db.Pager, error)
+	Page(query db.Query) (*db.Pager, error)
 	Find(id interface{}, query ...db.Query) (*TResponse, error)
 	Create(req *TCreateRequest) (*TResponse, error)
 	Update(id interface{}, req *TUpdateRequest) (*TResponse, error)
@@ -29,15 +29,15 @@ type ICrudService[TModel db.IModel, TCreateRequest any, TUpdateRequest any, TRes
 // CrudService 是一个通用的 CRUD 服务，支持自定义请求和响应类型
 type CrudService[TModel db.IModel, TCreateRequest any, TUpdateRequest any, TResponse any] struct {
 	base_service.BaseService
-	CreateOnly   []string                                                    // 创建时允许的字段
-	CreateOmit   []string                                                    // 创建时忽略的字段
-	UpdateOnly   []string                                                    // 更新时允许的字段
-	UpdateOmit   []string                                                    // 更新时忽略的字段
-	Unique       []string                                                    // 单字段唯一性(每个字段独立唯一)
-	UniqueGroups [][]string                                                  // 组合唯一性(每个数组内的字段组合唯一)
-	BeforeCreate func(ctx context.Context, req *TCreateRequest, model *TModel) error // 创建前的钩子函数
-	BeforeUpdate func(ctx context.Context, req *TUpdateRequest, model *TModel) error // 更新前的钩子函数
-	BeforeDelete func(ctx context.Context, query db.Query) error                     // 删除前的钩子函数
+	CreateOnly   []string                                                                                 // 创建时允许的字段
+	CreateOmit   []string                                                                                 // 创建时忽略的字段
+	UpdateOnly   []string                                                                                 // 更新时允许的字段
+	UpdateOmit   []string                                                                                 // 更新时忽略的字段
+	Unique       []string                                                                                 // 单字段唯一性(每个字段独立唯一)
+	UniqueGroups [][]string                                                                               // 组合唯一性(每个数组内的字段组合唯一)
+	BeforeCreate func(ctx context.Context, req *TCreateRequest, model *TModel) error                      // 创建前的钩子函数
+	BeforeUpdate func(ctx context.Context, req *TUpdateRequest, model *TModel) error                      // 更新前的钩子函数
+	BeforeDelete func(ctx context.Context, query db.Query) error                                          // 删除前的钩子函数
 	AfterCreated func(ctx context.Context, req *TCreateRequest, model *TModel, response *TResponse) error // 创建后的钩子函数
 	AfterUpdated func(ctx context.Context, req *TUpdateRequest, model *TModel, response *TResponse) error // 更新后的钩子函数
 	AfterDeleted func(ctx context.Context, query db.Query, success bool) error                            // 删除后的钩子函数
@@ -62,31 +62,11 @@ func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) Get(que
 }
 
 // Page 获取数据
-func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) Page(query ...db.Query) (*db.Pager, error) {
-	q := db.Query{}
-	if len(query) > 0 {
-		q = query[0]
-	}
+func (s *CrudService[TModel, TCreateRequest, TUpdateRequest, TResponse]) Page(query db.Query) (*db.Pager, error) {
 	var pager db.Pager
-	if err := (&db.QueryBuilder[TModel]{Query: q}).Page(&pager); err != nil {
+	if err := (&db.QueryBuilder[TModel]{Query: query}).Page(&pager, []TResponse{}); err != nil {
 		return nil, err
 	}
-
-	// 获取 records 字段
-	records, ok := pager.Data.([]TModel)
-	if !ok {
-		return &pager, nil // 如果转换失败，直接返回原始结果
-	}
-
-	// 转换为安全的响应结构体列表
-	responseList := make([]TResponse, len(records))
-	for i, record := range records {
-		z.ToStruct(record, &responseList[i])
-	}
-
-	// 替换 Data 字段
-	pager.Data = responseList
-
 	return &pager, nil
 }
 

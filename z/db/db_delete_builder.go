@@ -74,16 +74,16 @@ func (q DeleteBuilder[T]) Delete(query ...Query) (bool, error) {
 	if len(query) > 0 {
 		db, err := ParseSearch(db, query[0].Search, query[0].Required)
 		if err != nil {
-			return false, WrapDBError(err) // 使用错误包装器
+			return false, WrapDBError(err)
 		}
 
 		if err := db.Delete(&zero).Error; err != nil {
-			return false, WrapDBError(err) // 使用错误包装器
+			return false, WrapDBError(err)
 		}
 	} else {
 		// 没有额外查询条件时直接删除
 		if err := db.Delete(&zero).Error; err != nil {
-			return false, WrapDBError(err) // 使用错误包装器
+			return false, WrapDBError(err)
 		}
 	}
 
