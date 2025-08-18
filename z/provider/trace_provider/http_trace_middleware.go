@@ -2,7 +2,6 @@ package trace_provider
 
 import (
 	"fmt"
-	"time"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	. "github.com/icreateapp-com/go-zLib/z"
@@ -12,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
+	"time"
 )
 
 // HttpTraceMiddleware 链路追踪中间件 - 专门处理链路追踪功能
@@ -19,7 +19,7 @@ func HttpTraceMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 记录请求开始时间
 		startTime := time.Now()
-		
+
 		// 生成请求ID并存储到上下文中
 		requestID := uuid.New().String()
 		c.Set("request_id", requestID)
@@ -53,11 +53,11 @@ func HttpTraceMiddleware() gin.HandlerFunc {
 
 		// 计算请求处理时间
 		duration := time.Since(startTime)
-		
+
 		// 记录响应状态码和其他响应信息
 		statusCode := c.Writer.Status()
 		responseSize := c.Writer.Size()
-		
+
 		span.SetAttributes(
 			semconv.HTTPStatusCode(statusCode),
 			attribute.Int64("response.size", int64(responseSize)),
@@ -77,7 +77,7 @@ Client IP: %s
 Errors Count: %d`, requestID, c.Request.Method, c.FullPath(), statusCode, duration, c.ClientIP(), len(c.Errors))
 
 			Info.Println(errorSummary)
-			
+
 			// 为每个错误添加属性
 			for i, ginErr := range c.Errors {
 				span.SetAttributes(
@@ -90,7 +90,7 @@ Errors Count: %d`, requestID, c.Request.Method, c.FullPath(), statusCode, durati
 		// 设置span状态
 		spanCode, msg := SpanStatusFromHTTP(statusCode)
 		span.SetStatus(spanCode, msg)
-		
+
 		// 记录请求完成信息（仅在调试模式下）
 		if statusCode >= 400 {
 			requestSummary := fmt.Sprintf(`=== HTTP REQUEST COMPLETED ===
@@ -103,7 +103,7 @@ Response Size: %d bytes
 Client IP: %s
 User Agent: %s
 === END REQUEST ===`, requestID, c.Request.Method, c.FullPath(), statusCode, duration, responseSize, c.ClientIP(), c.Request.UserAgent())
-			
+
 			Info.Println(requestSummary)
 		}
 	}

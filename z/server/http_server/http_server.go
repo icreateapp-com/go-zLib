@@ -86,7 +86,8 @@ func HttpServe(setup func(engine *gin.Engine), router func(engine *gin.Engine), 
 	engine.Use(middles...)
 
 	// web static directory
-	engine.Use(static.Serve("/", static.LocalFile("statics", false)))
+	staticDir := Config.GetString("static_dir", "public")
+	engine.Use(static.Serve("/", static.LocalFile(staticDir, false)))
 
 	// routers
 	router(engine)
