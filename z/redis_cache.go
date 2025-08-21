@@ -3,9 +3,10 @@ package z
 import (
 	"context"
 	"fmt"
+	"time"
+
 	"github.com/goccy/go-json"
 	"github.com/redis/go-redis/v9"
-	"time"
 )
 
 type redisCache struct {
@@ -112,4 +113,9 @@ func (r *redisCache) Keys(pattern string) ([]string, error) {
 	}
 
 	return keys, nil
+}
+
+// Client 获取 Redis 客户端实例
+func (r *redisCache) Client() *redis.Client {
+	return r.client
 }
