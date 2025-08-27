@@ -43,11 +43,14 @@ func GetManager() *WebSocketManager {
 			upgrader: websocket.Upgrader{
 				ReadBufferSize:  ReadBufferSize,
 				WriteBufferSize: WriteBufferSize,
+				Subprotocols:    []string{"chat", "echo", "binary"},
 				CheckOrigin: func(r *http.Request) bool {
-					return true // 允许跨域连接，生产环境需要严格验证
+					return true
 				},
+				// 启用压缩扩展
+				EnableCompression: true,
 			},
-			cleanupTicker: time.NewTicker(time.Minute), // 每分钟清理一次
+			cleanupTicker: time.NewTicker(time.Minute),
 			stopChan:      make(chan struct{}),
 		}
 		// 启动清理协程
@@ -67,17 +70,34 @@ func (m *WebSocketManager) SetHandler(handler WebSocketHandler) {
 func (m *WebSocketManager) HandleWebSocket(c *gin.Context) {
 	w := c.Writer
 	r := c.Request
+
+	// 记录连接尝试信息
+	clientIP := getClientIP(r)
+	userAgent := r.Header.Get("User-Agent")
+	protocol := "ws"
+	if r.TLS != nil {
+		protocol = "wss"
+	}
+	log.Printf("WebSocket连接尝试: IP=%s, Protocol=%s, UserAgent=%s", clientIP, protocol, userAgent)
+
 	// 升级HTTP连接为WebSocket
 	conn, err := m.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket升级失败: %v", err)
+		log.Printf("WebSocket升级失败: IP=%s, Protocol=%s, Error=%v", clientIP, protocol, err)
+		// 检查常见的升级失败原因
+		if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+			log.Printf("WebSocket意外关闭错误: %v", err)
+		}
 		return
 	}
 	defer conn.Close()
 
+	// 记录成功连接信息
+	log.Printf("WebSocket连接成功: IP=%s, Protocol=%s, Subprotocol=%s", clientIP, protocol, conn.Subprotocol())
+
 	// 生成会话ID
 	sessionID := uuid.New().String()
-	clientIP := getClientIP(r)
+	// clientIP 已在上面定义，这里不需要重新声明
 
 	// 调用业务层连接处理
 	var connInfo *ConnectionInfo

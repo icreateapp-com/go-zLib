@@ -303,6 +303,39 @@ info, err := auth_provider.AuthProvider.GetDeviceInfo("api", "user123", "mobile-
 r.Use(auth_provider.AuthProvider.HttpAuthProviderMiddleware())
 ```
 
+## 令牌获取方式
+
+认证中间件支持多种方式获取访问令牌，按优先级顺序：
+
+### 1. Authorization Header（推荐）
+
+标准的HTTP认证方式，支持Bearer令牌格式：
+
+```bash
+# 带Bearer前缀
+curl -H "Authorization: Bearer your-jwt-token" http://localhost:8080/api/profile
+
+# 不带Bearer前缀（自动识别）
+curl -H "Authorization: your-jwt-token" http://localhost:8080/api/profile
+```
+
+### 2. URL参数
+
+当无法设置HTTP头部时（如WebSocket连接、某些客户端限制），可以通过URL参数传递令牌：
+
+```bash
+# 通过token参数传递
+curl "http://localhost:8080/api/profile?token=your-jwt-token"
+
+# WebSocket连接示例
+ws://localhost:8080/ws?token=your-jwt-token
+```
+
+**注意事项：**
+- URL参数方式可能在日志中暴露令牌，生产环境建议优先使用Authorization Header
+- 两种方式同时存在时，优先使用Authorization Header
+- 令牌格式和验证规则完全相同
+
 ## 中间件集成
 
 ### Gin 中间件
@@ -326,7 +359,7 @@ func main() {
     // 中间件会自动：
     // 1. 根据路由前缀匹配对应的Guard
     // 2. 检查是否为匿名路由
-    // 3. 提取和验证认证令牌
+    // 3. 从多种来源提取和验证认证令牌（Authorization Header 或 URL参数）
     // 4. 设置认证上下文
     // 5. 返回友好的错误响应
     

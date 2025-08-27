@@ -13,8 +13,6 @@ import (
 	"github.com/icreateapp-com/go-zLib/z"
 )
 
-
-
 // authProvider 认证提供者结构
 type authProvider struct {
 	guards     map[string]*GuardConfig // guard配置映射
@@ -61,7 +59,7 @@ func (a *authProvider) Init() {
 		}
 
 		guard := &GuardConfig{}
-		
+
 		// 解析配置字段
 		if guardType, exists := guardConfigMap["type"]; exists {
 			guard.Type = guardType.(string)
@@ -78,7 +76,7 @@ func (a *authProvider) Init() {
 		if ssoEnabled, exists := guardConfigMap["sso_enabled"]; exists {
 			guard.SSOEnabled = ssoEnabled.(bool)
 		}
-		
+
 		// 解析匿名路由列表
 		if anonymityInterface, exists := guardConfigMap["anonymity"]; exists {
 			if anonymitySlice, ok := anonymityInterface.([]interface{}); ok {
@@ -137,7 +135,7 @@ func (a *authProvider) getJWTSecret() []byte {
 func (a *authProvider) isRedisCache(guardName string) bool {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
-	
+
 	guard, exists := a.guards[guardName]
 	if !exists || guard.Cache == "redis" {
 		return true
@@ -196,7 +194,7 @@ func (a *authProvider) getTokenHash(token string) string {
 func (a *authProvider) setContext(c *gin.Context, guardName, userID, device string, data map[string]interface{}) {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
-	
+
 	a.ginContext = c
 	a.contexts[guardName] = &AuthContext{
 		GuardName: guardName,
@@ -209,7 +207,7 @@ func (a *authProvider) setContext(c *gin.Context, guardName, userID, device stri
 // clearUserAllDevices 清除用户在指定guard下的所有设备会话（用于SSO）
 func (a *authProvider) clearUserAllDevices(guardName, userID string) error {
 	devicesKey := a.getUserDevicesKey(guardName, userID)
-	
+
 	// 获取用户的设备列表
 	if devices, exists := a.getCache(guardName, devicesKey); exists {
 		if deviceList, ok := devices.([]interface{}); ok {
@@ -222,7 +220,7 @@ func (a *authProvider) clearUserAllDevices(guardName, userID string) error {
 			}
 		}
 	}
-	
+
 	// 清除设备列表
 	a.deleteCache(guardName, devicesKey)
 	return nil
@@ -231,7 +229,7 @@ func (a *authProvider) clearUserAllDevices(guardName, userID string) error {
 // addUserDevice 将设备添加到用户的设备列表中
 func (a *authProvider) addUserDevice(guardName, userID, device string) error {
 	devicesKey := a.getUserDevicesKey(guardName, userID)
-	
+
 	var devices []string
 	if existingDevices, exists := a.getCache(guardName, devicesKey); exists {
 		if deviceList, ok := existingDevices.([]interface{}); ok {
@@ -242,17 +240,17 @@ func (a *authProvider) addUserDevice(guardName, userID, device string) error {
 			}
 		}
 	}
-	
+
 	// 检查设备是否已存在
 	for _, d := range devices {
 		if d == device {
 			return nil // 设备已存在，无需添加
 		}
 	}
-	
+
 	// 添加新设备
 	devices = append(devices, device)
-	
+
 	// 存储设备列表（设置较长的过期时间）
 	return a.setCache(guardName, devicesKey, devices, 24*time.Hour)
 }
@@ -273,7 +271,7 @@ func (a *authProvider) Login(guard string, userID string, device string, duratio
 	a.mutex.RLock()
 	guardConfig, exists := a.guards[guard]
 	a.mutex.RUnlock()
-	
+
 	if !exists {
 		return "", fmt.Errorf("guard '%s' not found", guard)
 	}
@@ -339,9 +337,9 @@ func (a *authProvider) Logout(guard, device string, userID ...string) error {
 	if z.StringIsEmpty(guard) {
 		return fmt.Errorf("guard name cannot be empty")
 	}
-	
+
 	var targetUserID string
-	
+
 	// 如果没有传递userID参数，则获取当前登录用户的ID
 	if len(userID) == 0 || z.StringIsEmpty(userID[0]) {
 		currentUserID, err := a.GetUserID(guard)
@@ -349,7 +347,7 @@ func (a *authProvider) Logout(guard, device string, userID ...string) error {
 			return fmt.Errorf("failed to get current user ID: %w", err)
 		}
 		targetUserID = currentUserID
-		
+
 		// 如果device为空且是当前用户，获取当前设备
 		if z.StringIsEmpty(device) {
 			if context, exists := a.contexts[guard]; exists && context != nil {
@@ -359,7 +357,7 @@ func (a *authProvider) Logout(guard, device string, userID ...string) error {
 	} else {
 		targetUserID = userID[0]
 	}
-	
+
 	if z.StringIsEmpty(targetUserID) {
 		return fmt.Errorf("user ID cannot be empty")
 	}
@@ -368,23 +366,23 @@ func (a *authProvider) Logout(guard, device string, userID ...string) error {
 	}
 
 	cacheKey := a.getCacheKey(guard, targetUserID, device)
-	
+
 	// 清除缓存中的登录信息
 	if err := a.deleteCache(guard, cacheKey); err != nil {
 		return fmt.Errorf("failed to clear cache: %w", err)
 	}
-	
+
 	// 从设备列表中移除该设备
 	a.removeUserDevice(guard, targetUserID, device)
-	
+
 	// 清除内存中的认证上下文（如果是当前设备）
 	a.mutex.Lock()
-	if context, exists := a.contexts[guard]; exists && context != nil && 
+	if context, exists := a.contexts[guard]; exists && context != nil &&
 		context.UserID == targetUserID && context.Device == device {
 		delete(a.contexts, guard)
 	}
 	a.mutex.Unlock()
-	
+
 	return nil
 }
 
@@ -393,9 +391,9 @@ func (a *authProvider) LogoutAll(guard string, userID ...string) error {
 	if z.StringIsEmpty(guard) {
 		return fmt.Errorf("guard name cannot be empty")
 	}
-	
+
 	var targetUserID string
-	
+
 	// 如果没有传递userID参数，则获取当前登录用户的ID
 	if len(userID) == 0 || z.StringIsEmpty(userID[0]) {
 		currentUserID, err := a.GetUserID(guard)
@@ -406,7 +404,7 @@ func (a *authProvider) LogoutAll(guard string, userID ...string) error {
 	} else {
 		targetUserID = userID[0]
 	}
-	
+
 	if z.StringIsEmpty(targetUserID) {
 		return fmt.Errorf("user ID cannot be empty")
 	}
@@ -415,19 +413,19 @@ func (a *authProvider) LogoutAll(guard string, userID ...string) error {
 	if err := a.clearUserAllDevices(guard, targetUserID); err != nil {
 		return fmt.Errorf("failed to clear all devices: %w", err)
 	}
-	
+
 	// 清除内存中的认证上下文
 	a.mutex.Lock()
 	delete(a.contexts, guard)
 	a.mutex.Unlock()
-	
+
 	return nil
 }
 
 // removeUserDevice 从用户设备列表中移除指定设备
 func (a *authProvider) removeUserDevice(guardName, userID, device string) error {
 	devicesKey := a.getUserDevicesKey(guardName, userID)
-	
+
 	var devices []string
 	if existingDevices, exists := a.getCache(guardName, devicesKey); exists {
 		if deviceList, ok := existingDevices.([]interface{}); ok {
@@ -438,7 +436,7 @@ func (a *authProvider) removeUserDevice(guardName, userID, device string) error 
 			}
 		}
 	}
-	
+
 	// 更新设备列表
 	if len(devices) > 0 {
 		return a.setCache(guardName, devicesKey, devices, 24*time.Hour)
@@ -453,11 +451,11 @@ func (a *authProvider) GetUserID(guard string) (string, error) {
 	a.mutex.RLock()
 	context, exists := a.contexts[guard]
 	a.mutex.RUnlock()
-	
+
 	if !exists || context == nil {
 		return "", fmt.Errorf("user not authenticated for guard '%s'", guard)
 	}
-	
+
 	return context.UserID, nil
 }
 
@@ -466,15 +464,15 @@ func (a *authProvider) GetData(guard string) (interface{}, error) {
 	a.mutex.RLock()
 	context, exists := a.contexts[guard]
 	a.mutex.RUnlock()
-	
+
 	if !exists || context == nil {
 		return nil, fmt.Errorf("user not authenticated for guard '%s'", guard)
 	}
-	
+
 	if data, exists := context.Data["data"]; exists {
 		return data, nil
 	}
-	
+
 	return nil, nil
 }
 
@@ -511,7 +509,7 @@ func GetUserID[T any](guard string) (T, error) {
 	if err != nil {
 		return zero, err
 	}
-	
+
 	var result T
 	if err := z.ToStruct(userIDStr, &result); err != nil {
 		return zero, fmt.Errorf("failed to convert user ID: %w", err)
@@ -526,11 +524,11 @@ func GetData[T any](guard string) (T, error) {
 	if err != nil {
 		return zero, err
 	}
-	
+
 	if data == nil {
 		return zero, nil
 	}
-	
+
 	var result T
 	if err := z.ToStruct(data, &result); err != nil {
 		return zero, fmt.Errorf("failed to convert user data: %w", err)
@@ -542,7 +540,7 @@ func GetData[T any](guard string) (T, error) {
 func (a *authProvider) findMatchingGuard(requestPath string) (string, *GuardConfig) {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
-	
+
 	for guardName, guardConfig := range a.guards {
 		// 检查路径前缀匹配
 		if guardConfig.Prefix != "" && strings.HasPrefix(requestPath, guardConfig.Prefix) {
@@ -552,10 +550,29 @@ func (a *authProvider) findMatchingGuard(requestPath string) (string, *GuardConf
 	return "", nil
 }
 
+// getTokenFromRequest 从请求中获取令牌，支持多种来源
+func (a *authProvider) getTokenFromRequest(c *gin.Context) string {
+	// 优先从 Authorization header 获取
+	authHeader := c.Request.Header.Get("Authorization")
+	if !z.StringIsEmpty(authHeader) {
+		token := a.extractToken(authHeader)
+		if !z.StringIsEmpty(token) {
+			return token
+		}
+	}
+
+	// 从 URL 参数 token 获取
+	if tokenParam := c.Query("token"); !z.StringIsEmpty(tokenParam) {
+		return tokenParam
+	}
+
+	return ""
+}
+
 // Authenticate 中间件专用认证方法
 func (a *authProvider) Authenticate(c *gin.Context) (bool, string, error) {
 	requestPath := c.Request.URL.Path
-	
+
 	// 获取匹配的guard
 	guardName, guardConfig := a.findMatchingGuard(requestPath)
 	if guardName == "" {
@@ -569,16 +586,10 @@ func (a *authProvider) Authenticate(c *gin.Context) (bool, string, error) {
 		}
 	}
 
-	// 获取Authorization header
-	authHeader := c.Request.Header.Get("Authorization")
-	if z.StringIsEmpty(authHeader) {
-		return false, "", ErrTokenMissing
-	}
-
-	// 提取token
-	token := a.extractToken(authHeader)
+	// 从多种来源获取令牌
+	token := a.getTokenFromRequest(c)
 	if z.StringIsEmpty(token) {
-		return false, "", ErrTokenInvalid
+		return false, "", ErrTokenMissing
 	}
 
 	// 根据guard类型进行认证
@@ -613,7 +624,7 @@ func (a *authProvider) Authenticate(c *gin.Context) (bool, string, error) {
 
 	// 设置认证上下文
 	a.setContext(c, guardName, userID, device, sessionData)
-	
+
 	return true, guardName, nil
 }
 
@@ -626,11 +637,11 @@ func (a *authProvider) authenticateFixedToken(guardName, token string, guardConf
 
 	// 生成token哈希作为用户ID
 	tokenHash := a.getTokenHash(token)
-	
+
 	// 检查缓存中是否存在会话
 	cacheKey := fmt.Sprintf("token_%s_%s", guardName, tokenHash)
 	sessionData, exists := a.getCache(guardName, cacheKey)
-	
+
 	if !exists {
 		// 创建新的会话数据
 		sessionData = map[string]interface{}{
@@ -639,7 +650,7 @@ func (a *authProvider) authenticateFixedToken(guardName, token string, guardConf
 			"login_time": time.Now().Unix(),
 			"token_type": "fixed",
 		}
-		
+
 		// 存储到缓存（固定token永不过期，设置较长时间）
 		a.setCache(guardName, cacheKey, sessionData, 24*365*time.Hour)
 	}
@@ -669,7 +680,7 @@ func (a *authProvider) authenticateJWT(guardName, token string) (string, map[str
 	// 首先获取用户的设备列表
 	devicesKey := a.getUserDevicesKey(guardName, claims.UserID)
 	devices, exists := a.getCache(guardName, devicesKey)
-	
+
 	if !exists {
 		return "", nil, ErrSessionNotFound
 	}
@@ -680,7 +691,7 @@ func (a *authProvider) authenticateJWT(guardName, token string) (string, map[str
 			if device, ok := deviceInterface.(string); ok {
 				cacheKey := a.getCacheKey(guardName, claims.UserID, device)
 				sessionData, exists := a.getCache(guardName, cacheKey)
-				
+
 				if exists {
 					sessionMap, ok := sessionData.(map[string]interface{})
 					if ok {
@@ -701,11 +712,11 @@ func (a *authProvider) GetCurrentDevice(guard string) (string, error) {
 	a.mutex.RLock()
 	context, exists := a.contexts[guard]
 	a.mutex.RUnlock()
-	
+
 	if !exists || context == nil {
 		return "", fmt.Errorf("user not authenticated for guard '%s'", guard)
 	}
-	
+
 	return context.Device, nil
 }
 
@@ -720,7 +731,7 @@ func (a *authProvider) GetUserDevices(guard, userID string) ([]string, error) {
 
 	devicesKey := a.getUserDevicesKey(guard, userID)
 	devices, exists := a.getCache(guard, devicesKey)
-	
+
 	if !exists {
 		return []string{}, nil // 返回空列表而不是错误
 	}
@@ -751,7 +762,7 @@ func (a *authProvider) IsDeviceOnline(guard, userID, device string) (bool, error
 
 	cacheKey := a.getCacheKey(guard, userID, device)
 	_, exists := a.getCache(guard, cacheKey)
-	
+
 	return exists, nil
 }
 
@@ -769,7 +780,7 @@ func (a *authProvider) GetDeviceInfo(guard, userID, device string) (map[string]i
 
 	cacheKey := a.getCacheKey(guard, userID, device)
 	sessionData, exists := a.getCache(guard, cacheKey)
-	
+
 	if !exists {
 		return nil, fmt.Errorf("device session not found")
 	}

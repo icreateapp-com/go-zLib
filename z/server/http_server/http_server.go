@@ -72,9 +72,15 @@ func HttpServe(setup func(engine *gin.Engine), router func(engine *gin.Engine), 
 	engine.Use(trace_provider.HttpTraceMiddleware())         // 错误日志中间件
 	engine.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Sec-WebSocket-Protocol, Sec-WebSocket-Extensions")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "OPTIONS,GET,POST,PUT,DELETE")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		// WebSocket 特定的 CORS 头部
+		if c.GetHeader("Upgrade") == "websocket" {
+			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Sec-WebSocket-Protocol, Sec-WebSocket-Extensions, Sec-WebSocket-Key, Sec-WebSocket-Version, Upgrade, Connection")
+		}
+
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
