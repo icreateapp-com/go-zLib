@@ -16,18 +16,17 @@ type ConnectionInfo struct {
 // WebSocketHandler WebSocket消息处理器接口
 type WebSocketHandler interface {
 	// OnConnected 连接建立时调用，返回连接信息和错误
-	OnConnected(c *gin.Context, sessionID string, clientIP string) (*ConnectionInfo, error)
+	OnConnected(c *gin.Context, clientIP string) (*ConnectionInfo, error)
 
 	// OnClosed 连接关闭时调用
-	OnClosed(c *gin.Context, sessionID string)
+	OnClosed(c *gin.Context, channelID, clientID string)
 
 	// OnMessage 收到消息时调用
-	OnMessage(c *gin.Context, sessionID string, message *Message) error
+	OnMessage(c *gin.Context, channelID, clientID string, message *Message) error
 }
 
 // Message WebSocket消息结构体
 type Message struct {
-	SessionID string      `json:"session_id"` // 会话ID
 	MessageID string      `json:"message_id"` // 消息ID
 	Event     string      `json:"event"`      // 事件类型
 	Content   interface{} `json:"content"`    // 消息内容
@@ -37,9 +36,8 @@ type Message struct {
 // Connection WebSocket连接信息
 type Connection struct {
 	Conn         *websocket.Conn // WebSocket连接
-	SessionID    string          // 会话ID
 	Channel      string          // 频道名称
-	ClientID     string          // 客户端IP地址
+	ClientID     string          // 客户端ID
 	ConnectedAt  time.Time       // 连接建立时间
 	LastActivity time.Time       // 最后活跃时间
 	SendChan     chan []byte     // 发送消息通道

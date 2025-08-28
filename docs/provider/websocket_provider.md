@@ -67,8 +67,8 @@ func (h *CustomHandler) SetManager(manager *websocket_provider.WebSocketManager)
     h.manager = manager
 }
 
-func (h *CustomHandler) OnConnected(c *gin.Context, sessionID string, clientIP string) (*websocket_provider.ConnectionInfo, error) {
-    log.Printf("新连接: sessionID=%s, clientIP=%s", sessionID, clientIP)
+func (h *CustomHandler) OnConnected(c *gin.Context, clientIP string) (*websocket_provider.ConnectionInfo, error) {
+    log.Printf("新连接: clientIP=%s", clientIP)
     
     // 根据业务逻辑设置频道和客户端ID
     channelID := "general" // 可以根据用户信息或请求参数设置
@@ -77,7 +77,7 @@ func (h *CustomHandler) OnConnected(c *gin.Context, sessionID string, clientIP s
     // 发送欢迎消息
     err := h.manager.SendMessage(clientID, "welcome", map[string]interface{}{
         "message": "欢迎连接到服务器",
-        "session": sessionID,
+        "client_id": clientID,
         "channel": channelID,
     })
     if err != nil {
@@ -90,42 +90,41 @@ func (h *CustomHandler) OnConnected(c *gin.Context, sessionID string, clientIP s
     }, nil
 }
 
-func (h *CustomHandler) OnClosed(c *gin.Context, sessionID string) {
-    log.Printf("连接关闭: sessionID=%s", sessionID)
+func (h *CustomHandler) OnClosed(c *gin.Context, channelID, clientID string) {
+    log.Printf("连接关闭: channelID=%s, clientID=%s", channelID, clientID)
 }
 
-func (h *CustomHandler) OnMessage(c *gin.Context, sessionID string, message *websocket_provider.Message) error {
-    log.Printf("收到消息: sessionID=%s, event=%s, content=%v", sessionID, message.Event, message.Content)
+func (h *CustomHandler) OnMessage(c *gin.Context, channelID, clientID string, message *websocket_provider.Message) error {
+    log.Printf("收到消息: channelID=%s, clientID=%s, event=%s, content=%v", channelID, clientID, message.Event, message.Content)
     
     // 根据消息事件类型处理
     switch message.Event {
     case "chat":
         // 处理聊天消息
-        h.handleChatMessage(sessionID, message)
+        h.handleChatMessage(channelID, clientID, message)
     case "join_room":
         // 处理加入房间
-        h.handleJoinRoom(sessionID, message)
+        h.handleJoinRoom(channelID, clientID, message)
     default:
         // 回显消息
         if msgBytes, err := json.Marshal(message); err == nil {
-            h.manager.SendMessage(sessionID, msgBytes)
+            h.manager.SendMessage(clientID, message.Event, message.Content)
         }
     }
     
     return nil
 }
 
-func (h *CustomHandler) handleChatMessage(sessionID string, message *websocket_provider.Message) {
+func (h *CustomHandler) handleChatMessage(channelID, clientID string, message *websocket_provider.Message) {
     // 处理聊天消息
     if content, ok := message.Content.(map[string]interface{}); ok {
         if channel, ok := content["channel"].(string); ok {
             // 广播聊天消息到指定频道
             chatMsg := &websocket_provider.Message{
-                SessionID: sessionID,
                 MessageID: fmt.Sprintf("chat_%d", time.Now().UnixNano()),
                 Event:     "chat",
                 Content: map[string]interface{}{
-                    "from":      sessionID,
+                    "from":      clientID,
                     "message":   content["message"],
                     "timestamp": time.Now().Unix(),
                 },
@@ -136,7 +135,6 @@ func (h *CustomHandler) handleChatMessage(sessionID string, message *websocket_p
         } else {
             // 发送个人回复消息
             response := &websocket_provider.Message{
-                SessionID: sessionID,
                 MessageID: fmt.Sprintf("response_%d", time.Now().UnixNano()),
                 Event:     "chat_response",
                 Content: map[string]interface{}{
@@ -146,21 +144,20 @@ func (h *CustomHandler) handleChatMessage(sessionID string, message *websocket_p
                 Timestamp: time.Now().Unix(),
             }
             
-            h.manager.SendMessage(sessionID, "chat_response", response.Content)
+            h.manager.SendMessage(clientID, "chat_response", response.Content)
         }
     }
 }
 
-func (h *CustomHandler) handleJoinRoom(sessionID string, message *websocket_provider.Message) {
+func (h *CustomHandler) handleJoinRoom(channelID, clientID string, message *websocket_provider.Message) {
     // 处理加入房间请求
     if content, ok := message.Content.(map[string]interface{}); ok {
         if roomID, ok := content["room_id"].(string); ok {
             // 这里可以添加房间管理逻辑
-            log.Printf("用户 %s 加入房间 %s", sessionID, roomID)
+            log.Printf("用户 %s 加入房间 %s", clientID, roomID)
             
             // 发送确认消息
             response := &websocket_provider.Message{
-                SessionID: sessionID,
                 MessageID: fmt.Sprintf("join_%d", time.Now().UnixNano()),
                 Event:     "room_joined",
                 Content: map[string]interface{}{
@@ -170,24 +167,21 @@ func (h *CustomHandler) handleJoinRoom(sessionID string, message *websocket_prov
                 Timestamp: time.Now().Unix(),
             }
             
-            h.manager.SendMessage(sessionID, "room_joined", response.Content)
+            h.manager.SendMessage(clientID, "room_joined", response.Content)
         }
     }
 }
 
-func (h *CustomHandler) handlePing(sessionID string, message *websocket_provider.Message) {
+func (h *CustomHandler) handlePing(channelID, clientID string, message *websocket_provider.Message) {
     // 处理心跳消息
     pong := &websocket_provider.Message{
-        SessionID: sessionID,
-        MessageID: fmt.Sprintf("pong_%d", time.Now().UnixNano()),
+        MessageID: uuid.New().String(), // 使用新的UUID作为MessageID
         Event:     "pong",
-        Content: map[string]interface{}{
-            "timestamp": time.Now().Unix(),
-        },
+        Content:   nil, // Content为空
         Timestamp: time.Now().Unix(),
     }
     
-    h.manager.SendMessage(sessionID, "pong", pong.Content)
+    h.manager.SendMessage(clientID, "pong", pong.Content)
 }
 
 func main() {
@@ -292,9 +286,9 @@ func main() {
 
 ### WebSocketHandler 接口
 
-- `OnConnected(c *gin.Context, sessionID string, clientIP string) (*ConnectionInfo, error)` - 连接建立时调用
-- `OnMessage(c *gin.Context, sessionID string, message *Message) error` - 收到消息时调用
-- `OnClosed(c *gin.Context, sessionID string)` - 连接关闭时调用
+- `OnConnected(c *gin.Context, clientIP string) (*ConnectionInfo, error)` - 连接建立时调用
+- `OnMessage(c *gin.Context, channelID, clientID string, message *Message) error` - 收到消息时调用
+- `OnClosed(c *gin.Context, channelID, clientID string)` - 连接关闭时调用
 
 ## 数据结构
 
@@ -309,7 +303,6 @@ type ConnectionInfo struct {
 ### Message 结构体
 ```go
 type Message struct {
-    SessionID string      `json:"session_id"` // 会话ID
     MessageID string      `json:"message_id"` // 消息ID
     Event     string      `json:"event"`      // 事件类型
     Content   interface{} `json:"content"`    // 消息内容

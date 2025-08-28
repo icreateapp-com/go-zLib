@@ -3,11 +3,12 @@ package websocket_provider
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/icreateapp-com/go-zLib/z"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,7 +18,7 @@ import (
 // WebSocketManager WebSocket连接管理器
 type WebSocketManager struct {
 	mu            sync.RWMutex           // 读写锁保证线程安全
-	connections   map[string]*Connection // sessionID -> Connection
+	connections   map[string]*Connection // clientID -> Connection
 	stats         *ConnectionStats       // 连接统计信息
 	handler       WebSocketHandler       // 消息处理器
 	upgrader      websocket.Upgrader     // WebSocket升级器
@@ -43,7 +44,6 @@ func GetManager() *WebSocketManager {
 			upgrader: websocket.Upgrader{
 				ReadBufferSize:  ReadBufferSize,
 				WriteBufferSize: WriteBufferSize,
-				Subprotocols:    []string{"chat", "echo", "binary"},
 				CheckOrigin: func(r *http.Request) bool {
 					return true
 				},
@@ -78,35 +78,31 @@ func (m *WebSocketManager) HandleWebSocket(c *gin.Context) {
 	if r.TLS != nil {
 		protocol = "wss"
 	}
-	log.Printf("WebSocket连接尝试: IP=%s, Protocol=%s, UserAgent=%s", clientIP, protocol, userAgent)
+	z.Debug.Printf("websocket connection attempt: ip=%s, protocol=%s, useragent=%s", clientIP, protocol, userAgent)
 
 	// 升级HTTP连接为WebSocket
 	conn, err := m.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket升级失败: IP=%s, Protocol=%s, Error=%v", clientIP, protocol, err)
+		z.Debug.Printf("websocket upgrade failed: ip=%s, protocol=%s, error=%v", clientIP, protocol, err)
 		// 检查常见的升级失败原因
 		if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-			log.Printf("WebSocket意外关闭错误: %v", err)
+			z.Debug.Printf("websocket unexpected close error: %v", err)
 		}
 		return
 	}
 	defer conn.Close()
 
 	// 记录成功连接信息
-	log.Printf("WebSocket连接成功: IP=%s, Protocol=%s, Subprotocol=%s", clientIP, protocol, conn.Subprotocol())
-
-	// 生成会话ID
-	sessionID := uuid.New().String()
-	// clientIP 已在上面定义，这里不需要重新声明
+	z.Debug.Printf("websocket connection established: ip=%s, protocol=%s, subprotocol=%s", clientIP, protocol, conn.Subprotocol())
 
 	// 调用业务层连接处理
 	var connInfo *ConnectionInfo
 	if m.handler != nil {
 		var err error
-		connInfo, err = m.handler.OnConnected(c, sessionID, clientIP)
+		connInfo, err = m.handler.OnConnected(c, clientIP)
 		if err != nil {
 			// 业务层拒绝连接
-			log.Printf("连接被拒绝: sessionID=%s, error=%v", sessionID, err)
+			z.Debug.Printf("connection rejected: error=%v", err)
 			m.sendErrorAndClose(conn, "Connection rejected: "+err.Error())
 			return
 		}
@@ -126,7 +122,6 @@ func (m *WebSocketManager) HandleWebSocket(c *gin.Context) {
 
 	// 创建连接对象
 	connection := &Connection{
-		SessionID:    sessionID,
 		Conn:         conn,
 		Channel:      channelID,
 		ClientID:     clientID,
@@ -137,8 +132,8 @@ func (m *WebSocketManager) HandleWebSocket(c *gin.Context) {
 	}
 
 	// 添加到连接池
-	m.addConnection(sessionID, connection)
-	defer m.removeConnection(sessionID)
+	m.addConnection(clientID, connection)
+	defer m.removeConnection(clientID)
 
 	// 启动连接处理协程
 	go m.handleSend(connection)
@@ -149,22 +144,22 @@ func (m *WebSocketManager) HandleWebSocket(c *gin.Context) {
 }
 
 // addConnection 添加连接
-func (m *WebSocketManager) addConnection(sessionID string, conn *Connection) {
+func (m *WebSocketManager) addConnection(clientID string, conn *Connection) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.connections[sessionID] = conn
+	m.connections[clientID] = conn
 	m.updateStats()
 
-	log.Printf("WebSocket连接建立: sessionID=%s, clientIP=%s", sessionID, conn.ClientID)
+	z.Debug.Printf("websocket connection created: clientid=%s", clientID)
 }
 
 // removeConnection 移除连接
-func (m *WebSocketManager) removeConnection(sessionID string) {
+func (m *WebSocketManager) removeConnection(clientID string) {
 	m.mu.Lock()
-	conn, exists := m.connections[sessionID]
+	conn, exists := m.connections[clientID]
 	if exists {
-		delete(m.connections, sessionID)
+		delete(m.connections, clientID)
 		close(conn.SendChan)
 	}
 	m.mu.Unlock()
@@ -172,9 +167,9 @@ func (m *WebSocketManager) removeConnection(sessionID string) {
 	if exists {
 		m.updateStats()
 		if m.handler != nil {
-			m.handler.OnClosed(conn.Context, sessionID)
+			m.handler.OnClosed(conn.Context, conn.Channel, conn.ClientID)
 		}
-		log.Printf("WebSocket连接关闭: sessionID=%s", sessionID)
+		z.Debug.Printf("websocket connection closed: clientid=%s", clientID)
 	}
 }
 
@@ -197,7 +192,6 @@ func (m *WebSocketManager) SendMessage(clientID string, event string, content in
 
 	// 构建 Message 结构体
 	message := &Message{
-		SessionID: targetSessionID,
 		MessageID: uuid.New().String(),
 		Event:     event,
 		Content:   content,
@@ -236,7 +230,6 @@ func (m *WebSocketManager) Broadcast(channelID string, event string, content int
 		if conn.Channel == channelID {
 			// 为每个连接构建独立的 Message 结构体
 			message := &Message{
-				SessionID: conn.SessionID,
 				MessageID: uuid.New().String(),
 				Event:     event,
 				Content:   content,
@@ -246,7 +239,7 @@ func (m *WebSocketManager) Broadcast(channelID string, event string, content int
 			// 序列化消息
 			msgBytes, err := json.Marshal(message)
 			if err != nil {
-				log.Printf("序列化消息失败: %v", err)
+				z.Debug.Printf("message serialization failed: %v", err)
 				continue
 			}
 
@@ -254,12 +247,12 @@ func (m *WebSocketManager) Broadcast(channelID string, event string, content int
 			case conn.SendChan <- msgBytes:
 				count++
 			default:
-				log.Printf("发送缓冲区满，跳过会话: %s", conn.SessionID)
+				z.Debug.Printf("send buffer full, skipping client: %s", conn.ClientID)
 			}
 		}
 	}
 
-	log.Printf("广播消息到频道 %s，成功发送 %d 个连接", channelID, count)
+	z.Debug.Printf("broadcasting message to channel %s, successfully sent to %d connections", channelID, count)
 	return nil
 }
 
@@ -280,7 +273,7 @@ func (m *WebSocketManager) GetStats() *ConnectionStats {
 	for _, conn := range m.connections {
 		stats.ChannelConnections[conn.Channel]++
 		stats.ConnectionsByClient[conn.ClientID] = append(
-			stats.ConnectionsByClient[conn.ClientID], conn.SessionID)
+			stats.ConnectionsByClient[conn.ClientID], conn.ClientID)
 	}
 
 	return stats
@@ -300,7 +293,7 @@ func (m *WebSocketManager) handleReceive(conn *Connection) {
 		_, message, err := conn.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket读取错误: %v", err)
+				z.Debug.Printf("websocket read error: %v", err)
 			}
 			break
 		}
@@ -315,14 +308,14 @@ func (m *WebSocketManager) handleReceive(conn *Connection) {
 		// 解析消息为 Message 结构体
 		var msg Message
 		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Printf("消息解析错误: sessionID=%s, error=%v", conn.SessionID, err)
+			z.Debug.Printf("message parsing error: clientid=%s, error=%v", conn.ClientID, err)
 			continue
 		}
 
 		// 调用业务层消息处理
 		if m.handler != nil {
-			if err := m.handler.OnMessage(conn.Context, conn.SessionID, &msg); err != nil {
-				log.Printf("消息处理错误: sessionID=%s, error=%v", conn.SessionID, err)
+			if err := m.handler.OnMessage(conn.Context, conn.Channel, conn.ClientID, &msg); err != nil {
+				z.Debug.Printf("message processing error: clientid=%s, error=%v", conn.ClientID, err)
 			}
 		}
 	}
@@ -343,7 +336,7 @@ func (m *WebSocketManager) handleSend(conn *Connection) {
 			}
 
 			if err := conn.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
-				log.Printf("发送消息失败: %v", err)
+				z.Debug.Printf("failed to send message: %v", err)
 				return
 			}
 
@@ -365,7 +358,7 @@ func (m *WebSocketManager) handleHeartbeat(conn *Connection) {
 		select {
 		case <-ticker.C:
 			if time.Since(conn.LastActivity) > ConnectionTimeout {
-				log.Printf("连接超时，关闭连接: sessionID=%s", conn.SessionID)
+				z.Debug.Printf("connection timeout, closing connection: clientid=%s", conn.ClientID)
 				conn.Conn.Close()
 				return
 			}
@@ -382,13 +375,12 @@ func (m *WebSocketManager) handlePingPong(conn *Connection, message []byte) bool
 		return false
 	}
 
-	if msg.Event == "ping" {
+	if msg.Event == "heartbeat" && msg.Content == "ping" {
 		// 回复pong消息
 		pongMsg := Message{
-			SessionID: conn.SessionID,
-			MessageID: fmt.Sprintf("pong_%d", time.Now().UnixNano()),
-			Event:     "pong",
-			Content:   msg.Content,
+			MessageID: uuid.New().String(),
+			Event:     "heartbeat",
+			Content:   "pong",
 			Timestamp: time.Now().Unix(),
 		}
 
@@ -396,7 +388,7 @@ func (m *WebSocketManager) handlePingPong(conn *Connection, message []byte) bool
 			select {
 			case conn.SendChan <- msgBytes:
 			default:
-				log.Printf("发送pong消息失败，缓冲区满: sessionID=%s", conn.SessionID)
+				z.Debug.Printf("failed to send pong message, buffer full: clientid=%s", conn.ClientID)
 			}
 		}
 		return true
@@ -456,7 +448,7 @@ func (m *WebSocketManager) cleanupTimeoutConnections() {
 	// 关闭超时连接
 	for _, sessionID := range timeoutSessions {
 		if conn, exists := m.connections[sessionID]; exists {
-			log.Printf("清理超时连接: sessionID=%s", sessionID)
+			z.Debug.Printf("cleaning up timeout connection: sessionid=%s", sessionID)
 			conn.Conn.Close()
 		}
 	}
@@ -475,7 +467,7 @@ func (m *WebSocketManager) Stop() {
 		conn.Conn.Close()
 	}
 
-	log.Printf("WebSocket管理器已停止")
+	z.Debug.Printf("websocket manager stopped")
 }
 
 // getClientIP 获取客户端IP地址
