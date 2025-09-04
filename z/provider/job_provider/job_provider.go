@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/icreateapp-com/go-zLib/z/provider/trace_provider"
 	"sync"
 	"time"
 
@@ -82,7 +83,7 @@ func (p *jobProvider) Init() {
 		z.Error.Fatal(fmt.Sprintf("max retries must be non-negative, got %d", maxRetries))
 	}
 
-	timeout := z.Config.GetInt("config.job.timeout", 30)
+	timeout := z.Config.GetInt("config.job.timeout", 3600)
 	if timeout <= 0 {
 		z.Error.Fatal(fmt.Sprintf("timeout must be positive, got %d", timeout))
 	}
@@ -122,13 +123,16 @@ func (p *jobProvider) RegisterHandler(name string, handler JobHandler) {
 // args[0]: payload (可选) - 任务参数
 // args[1]: delay (可选) - 延迟执行时间，默认立即执行
 func (p *jobProvider) AddJob(ctx context.Context, name string, args ...interface{}) (string, error) {
+	ctx, span := trace_provider.TraceProvider.Start(ctx)
+	defer span.End()
+
 	// 检查处理器是否存在
 	p.mutex.RLock()
 	handler, exists := p.handlers[name]
 	p.mutex.RUnlock()
 
 	if !exists {
-		return "", fmt.Errorf("handler not found for job: %s", name)
+		return "", trace_provider.TraceProvider.Error(span, fmt.Errorf("handler not found for job: %s", name))
 	}
 
 	// 解析可选参数
@@ -171,7 +175,7 @@ func (p *jobProvider) AddJob(ctx context.Context, name string, args ...interface
 		go func() {
 			time.Sleep(delay)
 			if err := p.pushToQueue(job); err != nil {
-				z.Error.Printf("Failed to push delayed job to queue: %v", err)
+				z.Error.Println(trace_provider.TraceProvider.Error(span, fmt.Errorf("failed to push delayed job to queue: %v", err)))
 				return
 			}
 			z.Info.Printf("Delayed job pushed to queue: %s (%s)", job.ID, job.Name)
@@ -179,7 +183,7 @@ func (p *jobProvider) AddJob(ctx context.Context, name string, args ...interface
 	} else {
 		// 立即执行
 		if err := p.pushToQueue(job); err != nil {
-			return "", fmt.Errorf("failed to push job to queue: %w", err)
+			return "", trace_provider.TraceProvider.Error(span, fmt.Errorf("failed to push job to queue: %w", err))
 		}
 	}
 
