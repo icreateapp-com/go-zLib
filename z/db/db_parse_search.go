@@ -84,6 +84,17 @@ func ParseSearch(db *gorm.DB, search []ConditionGroup, required []string) (*gorm
 				}
 			}
 
+			// 如果操作符不是 IS NULL 或 IS NOT NULL，且值为 nil 或空字符串，则跳过该条件
+			opLower := strings.ToLower(operator)
+			if opLower != "is null" && opLower != "is not null" {
+				if value == nil {
+					continue
+				}
+				if s, ok := value.(string); ok && s == "" {
+					continue
+				}
+			}
+
 			// 验证操作符
 			if !isValidOperator(operator) {
 				return nil, fmt.Errorf("invalid operator: '%s' is not a valid operator", operator)
