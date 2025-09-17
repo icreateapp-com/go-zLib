@@ -131,8 +131,8 @@ func CountWords(text string) int {
 	return utf8.RuneCountInString(text)
 }
 
-// Substring 按字符截取字符串
-func Substring(s string, start int, length int) string {
+// Substring 按字符截取字符串，支持可选后缀参数
+func Substring(s string, start int, length int, suffix ...string) string {
 	if start < 0 || length <= 0 {
 		return ""
 	}
@@ -149,5 +149,11 @@ func Substring(s string, start int, length int) string {
 		end = total
 	}
 
-	return string(runes[start:end])
+	result := string(runes[start:end])
+	// 如果还有更多字符并且提供了后缀，则添加后缀
+	if len(runes) > end && len(suffix) > 0 && suffix[0] != "" {
+		result += suffix[0]
+	}
+
+	return result
 }

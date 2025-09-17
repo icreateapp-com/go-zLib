@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+
 	"gorm.io/gorm"
 )
 
@@ -14,6 +15,7 @@ type rawUpdateCondition struct {
 
 type UpdateBuilder[T IModel] struct {
 	TX            *gorm.DB             // 事务支持
+	Query         Query                // 查询参数
 	Context       context.Context      // 上下文
 	rawConditions []rawUpdateCondition // 原生条件
 }
@@ -39,6 +41,7 @@ func (q *UpdateBuilder[T]) Where(query string, args ...interface{}) *UpdateBuild
 func (q *UpdateBuilder[T]) clone() *UpdateBuilder[T] {
 	newBuilder := &UpdateBuilder[T]{
 		TX:      q.TX,
+		Query:   q.Query,
 		Context: q.Context,
 	}
 
@@ -70,11 +73,21 @@ func (q UpdateBuilder[T]) Update(query Query, values T, customFunc ...func(*gorm
 		db = db.Where(condition.query, condition.args...)
 	}
 
+	// 先应用初始化时的 Query 参数
+	if len(q.Query.Search) > 0 || len(q.Query.Required) > 0 {
+		var err error
+		db, err = ParseSearch(db, q.Query.Search, q.Query.Required)
+		if err != nil {
+			return false, WrapDBError(err)
+		}
+	}
+
 	// 应用自定义函数（如 Select、Omit 等）
 	if len(customFunc) > 0 && customFunc[0] != nil {
 		db = customFunc[0](db)
 	}
 
+	// 再应用传入的查询参数
 	db, err := ParseSearch(db, query.Search, query.Required)
 	if err != nil {
 		return false, WrapDBError(err)
@@ -140,6 +153,7 @@ func (q UpdateBuilder[T]) UpdateByID(id interface{}, values T, customFunc ...fun
 	// 创建新的 UpdateBuilder，保持所有字段
 	newBuilder := UpdateBuilder[T]{
 		TX:            q.TX,
+		Query:         q.Query,
 		Context:       q.Context,
 		rawConditions: q.rawConditions,
 	}

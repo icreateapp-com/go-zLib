@@ -296,3 +296,24 @@ func ToJsonString(s interface{}) []byte {
 
 	return marshal
 }
+
+// GetValueInMap 获取 map 中的值
+func GetValueInMap[T any](values map[string]interface{}, key string) (*T, error) {
+	value, exists := values[key]
+	if !exists {
+		return nil, fmt.Errorf("missing %s in job payload", key)
+	}
+
+	// 检查value是否已经是指定类型T
+	if v, ok := value.(T); ok {
+		return &v, nil
+	}
+
+	// 如果不是，则尝试将其作为JSON进行解析
+	var r T
+	if err := json.Unmarshal([]byte(fmt.Sprintf("%v", value)), &r); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", key, err)
+	}
+
+	return &r, nil
+}

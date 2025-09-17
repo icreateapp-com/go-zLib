@@ -85,3 +85,46 @@ func (q CreateBuilder[T]) Create(values T, customFunc ...func(*gorm.DB) *gorm.DB
 	// 返回包含自动生成字段（如 ID）的结果
 	return result, nil
 }
+
+// BatchCreate 批量创建记录
+func (q CreateBuilder[T]) BatchCreate(values []T, customFunc ...func(*gorm.DB) *gorm.DB) ([]T, error) {
+	if len(values) == 0 {
+		return []T{}, nil
+	}
+
+	var zero T
+	var db *gorm.DB
+	if q.TX != nil {
+		db = q.TX.Model(&zero)
+	} else {
+		db = DB.Model(&zero)
+	}
+
+	// 应用上下文
+	if q.Context != nil {
+		db = db.WithContext(q.Context)
+	}
+
+	// 应用原生条件
+	for _, condition := range q.rawConditions {
+		db = db.Where(condition.query, condition.args...)
+	}
+
+	// 应用自定义函数（如 Select、Omit、OnConflict 等）
+	for _, fn := range customFunc {
+		if fn != nil {
+			db = fn(db)
+		}
+	}
+
+	// 创建副本用于数据库操作，确保原始数据不被修改
+	result := make([]T, len(values))
+	copy(result, values)
+
+	if err := db.Create(&result).Error; err != nil {
+		return nil, WrapDBError(err)
+	}
+
+	// 返回包含自动生成字段（如 ID）的结果
+	return result, nil
+}

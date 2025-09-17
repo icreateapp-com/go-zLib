@@ -14,6 +14,7 @@ type rawDeleteCondition struct {
 
 type DeleteBuilder[T IModel] struct {
 	TX            *gorm.DB             // 事务支持
+	Query         Query                // 查询参数
 	Context       context.Context      // 上下文
 	rawConditions []rawDeleteCondition // 原生条件
 }
@@ -39,6 +40,7 @@ func (q *DeleteBuilder[T]) Where(query string, args ...interface{}) *DeleteBuild
 func (q *DeleteBuilder[T]) clone() *DeleteBuilder[T] {
 	newBuilder := &DeleteBuilder[T]{
 		TX:      q.TX,
+		Query:   q.Query,
 		Context: q.Context,
 	}
 
@@ -68,6 +70,15 @@ func (q DeleteBuilder[T]) Delete(query ...Query) (bool, error) {
 	// 应用原生条件
 	for _, condition := range q.rawConditions {
 		db = db.Where(condition.query, condition.args...)
+	}
+
+	// 先应用初始化时的 Query 参数
+	if len(q.Query.Search) > 0 || len(q.Query.Required) > 0 {
+		var err error
+		db, err = ParseSearch(db, q.Query.Search, q.Query.Required)
+		if err != nil {
+			return false, WrapDBError(err)
+		}
 	}
 
 	// 如果提供了查询参数，则应用查询条件
