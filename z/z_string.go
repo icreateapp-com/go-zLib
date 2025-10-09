@@ -8,8 +8,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/google/uuid"
 )
 
 // StringIsEmpty 判断字符串是否为空
@@ -114,11 +112,6 @@ func StringToSlice(input string, separators ...string) []string {
 	}
 
 	return result
-}
-
-// GetUUID 获取UUID
-func GetUUID() string {
-	return uuid.New().String()
 }
 
 // ToInt64 获取Int64

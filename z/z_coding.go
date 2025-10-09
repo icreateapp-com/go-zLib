@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 	"io"
 	"log"
@@ -164,4 +165,9 @@ func IsBase64Image(toTest string) bool {
 func IsUUID(uuid string) bool {
 	re := regexp.MustCompile(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})$`)
 	return re.MatchString(uuid)
+}
+
+// GetUUID 获取UUID
+func GetUUID() string {
+	return uuid.New().String()
 }

@@ -26,12 +26,12 @@ type ServiceFactory[TModel db.IModel, TCreateRequest any, TUpdateRequest any, TR
 type CrudController[TModel db.IModel, TCreateRequest any, TUpdateRequest any, TResponse any] struct {
 	base_controller.BaseController
 	serviceFactory ServiceFactory[TModel, TCreateRequest, TUpdateRequest, TResponse]
-	BeforeCreate   func(c *gin.Context, req *TCreateRequest) error                // 创建前的钩子函数
-	BeforeUpdate   func(c *gin.Context, req *TUpdateRequest) error                // 更新前的钩子函数
-	BeforeDelete   func(c *gin.Context, id string) error                          // 删除前的钩子函数
-	AfterCreated   func(c *gin.Context, req *TCreateRequest, res *TResponse)      // 创建后的钩子函数
+	BeforeCreate   func(c *gin.Context, req *TCreateRequest) error                      // 创建前的钩子函数
+	BeforeUpdate   func(c *gin.Context, req *TUpdateRequest) error                      // 更新前的钩子函数
+	BeforeDelete   func(c *gin.Context, id string) error                                // 删除前的钩子函数
+	AfterCreated   func(c *gin.Context, req *TCreateRequest, res *TResponse)            // 创建后的钩子函数
 	AfterUpdated   func(c *gin.Context, id string, req *TUpdateRequest, res *TResponse) // 更新后的钩子函数
-	AfterDeleted   func(c *gin.Context, id string)                               // 删除后的钩子函数
+	AfterDeleted   func(c *gin.Context, id string)                                      // 删除后的钩子函数
 }
 
 // Get 获取数据列表
@@ -113,11 +113,11 @@ func (ctrl *CrudController[TModel, TCreateRequest, TUpdateRequest, TResponse]) U
 // Delete 删除数据
 func (ctrl *CrudController[TModel, TCreateRequest, TUpdateRequest, TResponse]) Delete(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	if ctrl.BeforeDelete != nil {
 		if err := ctrl.BeforeDelete(c, id); err != nil {
 			z.Failure(c, err)
-			return  
+			return
 		}
 	}
 
