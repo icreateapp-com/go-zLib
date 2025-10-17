@@ -150,3 +150,12 @@ func Substring(s string, start int, length int, suffix ...string) string {
 
 	return result
 }
+
+// ClearJsonString 清理JSON字符串
+func ClearJsonString(response string) string {
+	response = strings.TrimSpace(response)
+	response = strings.TrimPrefix(response, "```json")
+	response = strings.TrimPrefix(response, "```")
+	response = strings.TrimSuffix(response, "```")
+	return strings.TrimSpace(response)
+}
