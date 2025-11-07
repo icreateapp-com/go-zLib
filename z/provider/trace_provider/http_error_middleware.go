@@ -3,6 +3,7 @@ package trace_provider
 import (
 	"fmt"
 	"runtime/debug"
+
 	"github.com/gin-gonic/gin"
 	. "github.com/icreateapp-com/go-zLib/z"
 	"go.opentelemetry.io/otel/attribute"
@@ -14,7 +15,7 @@ func HttpErrorRecoveryMiddleware() gin.HandlerFunc {
 	return gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered interface{}) {
 		// 获取调用栈信息
 		stack := debug.Stack()
-		
+
 		// 记录panic错误到跟踪器
 		var err error
 		if e, ok := recovered.(error); ok {
@@ -113,7 +114,7 @@ Error Meta: %v
 						attribute.String("request.client_ip", clientIP),
 					)
 				}
-				
+
 				// 记录详细的错误信息到日志
 				Error.Println(errorDetails)
 			}

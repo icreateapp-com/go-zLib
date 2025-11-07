@@ -31,6 +31,7 @@ func (p *_cron) Remove(id cron.EntryID) {
 // Start 后台运行
 func (p *_cron) Start() {
 	p.cronIns.Start()
+	Info.Println("cron started")
 }
 
 // Run 前台运行
