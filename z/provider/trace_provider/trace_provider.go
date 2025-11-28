@@ -30,7 +30,6 @@ type traceProvider struct {
 var TraceProvider = &traceProvider{}
 
 // Init 初始化链路追踪服务
-// Init 初始化链路追踪服务
 func (t *traceProvider) Init() {
 	if !Config.GetBool("config.observe.trace.enable") {
 		return

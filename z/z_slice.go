@@ -2,6 +2,7 @@ package z
 
 import (
 	"fmt"
+	"golang.org/x/exp/constraints"
 	"sort"
 	"strings"
 	"time"
@@ -134,6 +135,38 @@ func JoinStringSlice(strs []string) string {
 	result := quoted[0]
 	for i := 1; i < len(quoted); i++ {
 		result += ", " + quoted[i]
+	}
+	return result
+}
+
+// MaxSlice 返回切片中的最大值
+func MaxSlice[T constraints.Ordered](slice []T) T {
+	if len(slice) == 0 {
+		var zero T
+		return zero
+	}
+
+	result := slice[0]
+	for _, v := range slice[1:] {
+		if v > result {
+			result = v
+		}
+	}
+	return result
+}
+
+// MinSlice 返回切片中的最小值
+func MinSlice[T constraints.Ordered](slice []T) T {
+	if len(slice) == 0 {
+		var zero T
+		return zero
+	}
+
+	result := slice[0]
+	for _, v := range slice[1:] {
+		if v < result {
+			result = v
+		}
 	}
 	return result
 }

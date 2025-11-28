@@ -38,7 +38,6 @@ func (db *db) Init() *db {
 	switch driver {
 	case "mysql":
 		dbDriver = NewMySQLDriver()
-		break
 	default:
 		z.Error.Fatal("unknown db type in config")
 	}

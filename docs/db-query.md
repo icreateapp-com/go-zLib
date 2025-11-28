@@ -80,7 +80,7 @@ queryBuilder := db.QueryBuilder[User]{
         Filter: []string{"id", "name", "email"}, // 只查询指定字段
         Search: []db.ConditionGroup{
             {
-                Conditions: [][]interface{}{
+                Conditions: [][] interface{}{
                     {"status", 1},
                     {"age", 18, ">="},
                 },

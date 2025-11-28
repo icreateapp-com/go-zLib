@@ -2,10 +2,15 @@ package z
 
 import (
 	"crypto/md5"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -170,4 +175,55 @@ func IsUUID(uuid string) bool {
 // GetUUID 获取UUID
 func GetUUID() string {
 	return uuid.New().String()
+}
+
+// DecryptRSAOAEP 使用RSA私钥对使用OAEP填充和SHA-256哈希的数据进行解密
+func DecryptRSAOAEP(privateKey *rsa.PrivateKey, ciphertext string) (string, error) {
+	// 对密文进行Base64解码
+	decodedCipher, err := base64.StdEncoding.DecodeString(ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64 ciphertext: %v", err)
+	}
+
+	// 使用RSA-OAEP和SHA-256进行解密
+	decrypted, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, decodedCipher, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt with RSA-OAEP: %v", err)
+	}
+
+	return string(decrypted), nil
+}
+
+// DecryptRSAOAEPByBase64 使用Base64编码的RSA私钥对使用OAEP填充和SHA-256哈希的数据进行解密
+func DecryptRSAOAEPByBase64(base64PrivateKey string, ciphertext string) (string, error) {
+	// 对Base64编码的私钥进行解码
+	privateKeyBytes, err := base64.StdEncoding.DecodeString(base64PrivateKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64 private key: %v", err)
+	}
+
+	// 解析PEM格式的私钥
+	block, _ := pem.Decode(privateKeyBytes)
+	if block == nil {
+		return "", fmt.Errorf("failed to decode PEM block containing private key")
+	}
+
+	// 解析PKCS8格式的私钥
+	pkcs8PrivateKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		// 如果不是PKCS8格式，尝试使用PKCS1格式
+		pkcs1PrivateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return "", fmt.Errorf("failed to parse private key: %v", err)
+		}
+		return DecryptRSAOAEP(pkcs1PrivateKey, ciphertext)
+	}
+
+	// 类型断言获取RSA私钥
+	rsaPrivateKey, ok := pkcs8PrivateKey.(*rsa.PrivateKey)
+	if !ok {
+		return "", fmt.Errorf("private key is not an RSA private key")
+	}
+
+	return DecryptRSAOAEP(rsaPrivateKey, ciphertext)
 }

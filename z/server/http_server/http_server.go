@@ -2,6 +2,7 @@ package http_server
 
 import (
 	"fmt"
+	"github.com/icreateapp-com/go-zLib/z/server/http_server/http_middleware"
 	"os"
 	"time"
 
@@ -18,7 +19,11 @@ func HttpServe(setup func(engine *gin.Engine), router func(engine *gin.Engine), 
 	///////////////////////////////////////////////
 
 	// set timezone
-	loc, err := time.LoadLocation("Asia/Shanghai")
+	timezone := Config.GetString("config.timezone")
+	if timezone == "" {
+		timezone = "Asia/Shanghai"
+	}
+	loc, err := time.LoadLocation(timezone)
 	if err != nil {
 		loc = time.FixedZone("CST-8", 8*3600)
 	}
@@ -70,6 +75,7 @@ func HttpServe(setup func(engine *gin.Engine), router func(engine *gin.Engine), 
 	engine.Use(gin.Logger())
 	engine.Use(trace_provider.HttpErrorRecoveryMiddleware()) // 错误跟踪中间件
 	engine.Use(trace_provider.HttpTraceMiddleware())         // 错误日志中间件
+	engine.Use(http_middleware.MobileDetectMiddleware())     // 移动端检测中间件
 	engine.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Sec-WebSocket-Protocol, Sec-WebSocket-Extensions")

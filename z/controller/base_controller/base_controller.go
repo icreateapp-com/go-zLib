@@ -1,6 +1,9 @@
 package base_controller
 
 import (
+	"context"
+	"github.com/icreateapp-com/go-zLib/z"
+	"github.com/icreateapp-com/go-zLib/z/provider/trace_provider"
 	"net/url"
 	"strconv"
 	"strings"
@@ -10,6 +13,20 @@ import (
 )
 
 type BaseController struct {
+}
+
+// Handler 返回请求处理
+func (b *BaseController) Handler(c *gin.Context, spanName string, handler func(ctx context.Context) (interface{}, error)) {
+	ctx, span := trace_provider.TraceProvider.Start(c.Request.Context(), spanName)
+	defer span.End()
+
+	result, err := handler(ctx)
+	if err != nil {
+		z.Failure(c, err)
+		return
+	}
+
+	z.Success(c, result)
 }
 
 // GetQuery 从 gin.Context 中获取查询参数
