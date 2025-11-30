@@ -74,14 +74,18 @@ func (b *BaseController) getQueryFromURL(c *gin.Context) db.Query {
 	if searchStrs, ok := queryParams["search"]; ok && len(searchStrs) > 0 {
 		searchStr := searchStrs[0]
 		var conditions [][]interface{}
-		for _, part := range strings.Split(searchStr, ",") {
+		for _, part := range strings.Split(searchStr, "|") {
 			parts := strings.Split(part, ":")
 			if len(parts) >= 2 {
+				var value interface{}
 				field := parts[0]
-				value := parts[1]
+				value = parts[1]
 				operator := "="
 				if len(parts) > 2 {
 					operator = parts[2]
+					if strings.ToLower(operator) == "in" {
+						value = strings.Split(z.ToString(value), ",")
+					}
 				}
 				conditions = append(conditions, []interface{}{field, value, operator})
 			}
@@ -98,7 +102,7 @@ func (b *BaseController) getQueryFromURL(c *gin.Context) db.Query {
 	if orderByStrs, ok := queryParams["orderby"]; ok && len(orderByStrs) > 0 {
 		orderByStr := orderByStrs[0]
 		var orderBy [][]string
-		for _, part := range strings.Split(orderByStr, ",") {
+		for _, part := range strings.Split(orderByStr, "|") {
 			parts := strings.Split(part, ":")
 			if len(parts) == 2 {
 				orderBy = append(orderBy, []string{parts[0], parts[1]})
@@ -126,7 +130,7 @@ func (b *BaseController) getQueryFromURL(c *gin.Context) db.Query {
 	// 解析 include
 	if includeStrs, ok := queryParams["include"]; ok && len(includeStrs) > 0 {
 		includeStr := includeStrs[0]
-		query.Include = strings.Split(includeStr, ",")
+		query.Include = strings.Split(includeStr, "|")
 	}
 
 	return query
