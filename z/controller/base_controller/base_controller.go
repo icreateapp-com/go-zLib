@@ -83,7 +83,7 @@ func (b *BaseController) getQueryFromURL(c *gin.Context) db.Query {
 				operator := "="
 				if len(parts) > 2 {
 					operator = parts[2]
-					if strings.ToLower(operator) == "in" {
+					if strings.ToUpper(operator) == "IN" {
 						value = strings.Split(z.ToString(value), ",")
 					}
 				}
