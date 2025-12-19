@@ -1,6 +1,9 @@
 package z
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
@@ -11,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -226,4 +230,69 @@ func DecryptRSAOAEPByBase64(base64PrivateKey string, ciphertext string) (string,
 	}
 
 	return DecryptRSAOAEP(rsaPrivateKey, ciphertext)
+}
+
+// Encrypt 加密
+func Encrypt(plainText, key []byte) (string, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	// 分配足够的空间
+	blockSize := block.BlockSize()
+	plainText = pkcs7Padding(plainText, blockSize)
+
+	cipherText := make([]byte, len(plainText))
+	iv := make([]byte, blockSize)
+	if _, err := rand.Read(iv); err != nil {
+		return "", err
+	}
+
+	stream := cipher.NewCBCEncrypter(block, iv)
+	stream.CryptBlocks(cipherText, plainText)
+
+	cipherText = append(iv, cipherText...) // 在加密文本前加入IV
+	return base64.StdEncoding.EncodeToString(cipherText), nil
+}
+
+// Decrypt 解密
+func Decrypt(cipherTextBase64 string, key []byte) ([]byte, error) {
+	cipherText, err := base64.StdEncoding.DecodeString(cipherTextBase64)
+	if err != nil {
+		return nil, err
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	blockSize := block.BlockSize()
+	if len(cipherText) < blockSize {
+		return nil, errors.New("cipherText too short")
+	}
+
+	iv := cipherText[:blockSize]
+	cipherText = cipherText[blockSize:]
+
+	stream := cipher.NewCBCDecrypter(block, iv)
+	stream.CryptBlocks(cipherText, cipherText)
+
+	cipherText = pkcs7UnPadding(cipherText)
+	return cipherText, nil
+}
+
+// PKCS7 填充
+func pkcs7Padding(src []byte, blockSize int) []byte {
+	padding := blockSize - len(src)%blockSize
+	padText := bytes.Repeat([]byte{byte(padding)}, padding)
+	return append(src, padText...)
+}
+
+// PKCS7 去填充
+func pkcs7UnPadding(src []byte) []byte {
+	length := len(src)
+	unPadding := int(src[length-1])
+	return src[:(length - unPadding)]
 }
