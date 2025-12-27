@@ -3,7 +3,6 @@ package db
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 
 	"gorm.io/gorm"
@@ -13,6 +12,11 @@ import (
 func ParseSearch(db *gorm.DB, search []ConditionGroup, required []string) (*gorm.DB, error) {
 	if len(search) == 0 && len(required) == 0 {
 		return db, nil
+	}
+
+	// 允许空字符串参与查询条件的字段集合（例如 id = '' 需要生效）
+	allowEmptyStringFields := map[string]bool{
+		"id": true,
 	}
 
 	// 处理必需条件
@@ -91,7 +95,10 @@ func ParseSearch(db *gorm.DB, search []ConditionGroup, required []string) (*gorm
 					continue
 				}
 				if s, ok := value.(string); ok && s == "" {
-					continue
+					// 部分字段（例如主键 id）空字符串是允许的，需要生成明确条件，避免条件缺失导致误查询
+					if !allowEmptyStringFields[field] {
+						continue
+					}
 				}
 			}
 
@@ -174,41 +181,4 @@ func isValidOperator(operator string) bool {
 		"not between": true,
 	}
 	return validOperators[operator]
-}
-
-// buildCondition 构建单个条件
-func buildCondition(field string, value interface{}, operator string) (string, []interface{}, error) {
-	field = DB.F(field)
-	operator = strings.ToUpper(operator)
-
-	switch operator {
-	case "IS NULL", "IS NOT NULL":
-		return fmt.Sprintf("%s %s", field, operator), nil, nil
-
-	case "IN", "NOT IN":
-		if reflect.TypeOf(value).Kind() != reflect.Slice {
-			return "", nil, errors.New("IN/NOT IN operator requires slice value")
-		}
-		return fmt.Sprintf("%s %s (?)", field, operator), []interface{}{value}, nil
-
-	case "BETWEEN", "NOT BETWEEN":
-		if reflect.TypeOf(value).Kind() != reflect.Slice {
-			return "", nil, errors.New("BETWEEN/NOT BETWEEN operator requires slice value with 2 elements")
-		}
-		v := reflect.ValueOf(value)
-		if v.Len() != 2 {
-			return "", nil, errors.New("BETWEEN/NOT BETWEEN operator requires slice value with 2 elements")
-		}
-		return fmt.Sprintf("%s %s ? AND ?", field, operator), []interface{}{v.Index(0).Interface(), v.Index(1).Interface()}, nil
-
-	case "LIKE", "NOT LIKE":
-		// 自动添加通配符
-		if str, ok := value.(string); ok && !strings.Contains(str, "%") {
-			value = "%" + str + "%"
-		}
-		return fmt.Sprintf("%s %s ?", field, operator), []interface{}{value}, nil
-
-	default:
-		return fmt.Sprintf("%s %s ?", field, operator), []interface{}{value}, nil
-	}
 }

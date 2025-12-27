@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"gorm.io/gorm"
 )
 
@@ -233,7 +234,15 @@ func (q *QueryBuilder[T]) First(dest interface{}) error {
 func (q *QueryBuilder[T]) Find(id interface{}, dest interface{}) error {
 	// 复制一份新的 query
 	newQuery := q.Query
-	newQuery.Search = append([]ConditionGroup{}, q.Query.Search...)
+	// 深拷贝 Search，避免复用底层 slice 导致外部 Query 被污染
+	if len(q.Query.Search) > 0 {
+		newQuery.Search = make([]ConditionGroup, len(q.Query.Search))
+		copy(newQuery.Search, q.Query.Search)
+	}
+
+	if id == nil || id == "" {
+		return errors.New("id cannot be empty")
+	}
 
 	// 将 ID 条件添加到查询中
 	if newQuery.Search == nil {
@@ -356,6 +365,9 @@ func (q *QueryBuilder[T]) Exists() (bool, error) {
 
 // ExistsById 通过主键检查记录是否存在
 func (q *QueryBuilder[T]) ExistsById(id interface{}) (bool, error) {
+	if id == nil {
+		return false, errors.New("id cannot be empty")
+	}
 	query := Query{
 		Search: []ConditionGroup{
 			{

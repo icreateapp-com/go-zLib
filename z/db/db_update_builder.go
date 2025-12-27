@@ -101,6 +101,10 @@ func (q UpdateBuilder[T]) Update(query Query, values T, customFunc ...func(*gorm
 }
 
 func (q UpdateBuilder[T]) UpdateByID(id interface{}, values T, customFunc ...func(*gorm.DB) *gorm.DB) (bool, error) {
+	if id == nil || id == "" {
+		return false, errors.New("id cannot be empty")
+	}
+
 	queryBuilder := QueryBuilder[T]{
 		TX:      q.TX,
 		Context: q.Context,

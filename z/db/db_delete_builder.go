@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 
 	"gorm.io/gorm"
 )
@@ -102,6 +103,10 @@ func (q DeleteBuilder[T]) Delete(query ...Query) (bool, error) {
 }
 
 func (q DeleteBuilder[T]) DeleteByID(id interface{}, additionalQuery ...Query) (bool, error) {
+	if id == nil || id == "" {
+		return false, errors.New("id cannot be empty")
+	}
+
 	// 构建基础的ID查询条件
 	query := Query{
 		Search: []ConditionGroup{
