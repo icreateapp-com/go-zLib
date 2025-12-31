@@ -8,17 +8,17 @@ import (
 func ParseQuery(query Query, db *gorm.DB) (*gorm.DB, error) {
 	var err error
 
-	if db, err = ParseFilter(db, query.Filter); err != nil {
-		return nil, err
-	}
+	// if db, err = ParseFilter(db, query.Filter); err != nil {
+	// 	return nil, err
+	// }
 
 	if db, err = ParseSearch(db, query.Search, query.Required); err != nil {
 		return nil, err
 	}
 
-	if db, err = ParseInclude(db, query.Include); err != nil {
-		return nil, err
-	}
+	// if db, err = ParseInclude(db, query.Include); err != nil {
+	// 	return nil, err
+	// }
 
 	if db, err = ParseOrderBy(db, query.OrderBy); err != nil {
 		return nil, err

@@ -8,6 +8,23 @@ import (
 	"gorm.io/gorm"
 )
 
+func normalizeOperator(operator string) string {
+	op := strings.TrimSpace(operator)
+	if op == "" {
+		return "="
+	}
+
+	// URL 传参通常不便携带空格，允许用下划线表达
+	// 例如：not_like / left_like / is_not_null / not_in / not_between
+	op = strings.ReplaceAll(op, "_", " ")
+	// 合并连续空格
+	op = strings.Join(strings.Fields(op), " ")
+
+	// 统一为小写，后续再按需要输出大写（比如 IN/IS NULL）
+	opLower := strings.ToLower(op)
+	return opLower
+}
+
 // ParseSearch 解析搜索条件
 func ParseSearch(db *gorm.DB, search []ConditionGroup, required []string) (*gorm.DB, error) {
 	if len(search) == 0 && len(required) == 0 {
@@ -87,10 +104,10 @@ func ParseSearch(db *gorm.DB, search []ConditionGroup, required []string) (*gorm
 					operator = op
 				}
 			}
+			operator = normalizeOperator(operator)
 
 			// 如果操作符不是 IS NULL 或 IS NOT NULL，且值为 nil 或空字符串，则跳过该条件
-			opLower := strings.ToLower(operator)
-			if opLower != "is null" && opLower != "is not null" {
+			if operator != "is null" && operator != "is not null" {
 				if value == nil {
 					continue
 				}
@@ -108,7 +125,7 @@ func ParseSearch(db *gorm.DB, search []ConditionGroup, required []string) (*gorm
 			}
 
 			// 处理特殊的 like 操作符
-			switch strings.ToLower(operator) {
+			switch operator {
 			case "like":
 				if str, ok := value.(string); ok && !strings.Contains(str, "%") {
 					value = "%" + str + "%"
@@ -123,6 +140,12 @@ func ParseSearch(db *gorm.DB, search []ConditionGroup, required []string) (*gorm
 					value = str + "%"
 					operator = "like"
 				}
+			}
+
+			// 输出到 SQL 时，对部分操作符做标准化大写
+			switch operator {
+			case "in", "not in", "is null", "is not null", "between", "not between":
+				operator = strings.ToUpper(operator)
 			}
 
 			field = DB.F(field)
@@ -167,16 +190,10 @@ func isValidOperator(operator string) bool {
 		"left like":   true,
 		"right like":  true,
 		"not like":    true,
-		"LIKE":        true,
-		"NOT LIKE":    true,
-		"IN":          true,
-		"NOT IN":      true,
 		"in":          true,
 		"not in":      true,
-		"IS NULL":     true,
-		"IS NOT NULL": true,
-		"BETWEEN":     true,
-		"NOT BETWEEN": true,
+		"is null":     true,
+		"is not null": true,
 		"between":     true,
 		"not between": true,
 	}
