@@ -1,4 +1,4 @@
-package db
+package db_provider
 
 import (
 	"context"
@@ -22,6 +22,7 @@ type rawCondition struct {
 
 // QueryBuilder 查询构建器
 type QueryBuilder[T any] struct {
+	DB            *DB             // 数据库连接（DI 注入）
 	TX            *gorm.DB        // 事务支持
 	Query         Query           // 查询参数
 	Model         interface{}     // 显式设置查询模型
@@ -55,6 +56,7 @@ func (q *QueryBuilder[T]) Where(query string, args ...interface{}) *QueryBuilder
 // clone 克隆 QueryBuilder 实例
 func (q *QueryBuilder[T]) clone() *QueryBuilder[T] {
 	newBuilder := &QueryBuilder[T]{
+		DB:      q.DB,
 		TX:      q.TX,
 		Query:   q.Query,
 		Model:   q.Model,
@@ -83,12 +85,20 @@ func (q *QueryBuilder[T]) getDB() *gorm.DB {
 	if q.TX != nil {
 		return q.TX
 	}
-	return DB.DB
+	if q.DB != nil {
+		return q.DB.DB
+	}
+	return nil
 }
 
 // getDBWithModel 获取带模型的数据库连接
 func (q *QueryBuilder[T]) getDBWithModel() *gorm.DB {
 	db := q.getDB()
+	if db == nil {
+		// 这里不能 panic，否则会导致整个 HTTP 请求崩溃。
+		// 上层调用会在使用 db 时触发 nil deref，因此这里直接返回 nil，由调用方做错误包装。
+		return nil
+	}
 	model := q.Model
 	if model == nil {
 		model = new(T)
@@ -108,11 +118,16 @@ func (q *QueryBuilder[T]) getDBWithModel() *gorm.DB {
 	return db
 }
 
-// Get 查询多条记录
+// Get 查询多条记录（忽略 page 参数，支持 limit 参数控制返回数量）
 func (q *QueryBuilder[T]) Get(dest interface{}) error {
 	query := q.Query
+	// 忽略 page 参数，仅保留 limit 参数
+	query.Page = 0
 
 	db := q.getDBWithModel()
+	if db == nil {
+		return WrapDBError(errors.New("database not initialized"))
+	}
 
 	parsedDB, err := ParseQuery(query, db)
 	if err != nil {
@@ -138,25 +153,38 @@ func (q *QueryBuilder[T]) Page(pager *Pager, dest ...interface{}) error {
 		query.Limit = DefaultPageSize
 	}
 
-	db := q.getDBWithModel()
+	// 先获取总数（使用独立的数据库连接，不包含 Preload 和分页）
+	countBuilder := &QueryBuilder[T]{
+		DB:            q.DB,
+		Query:         Query{Search: query.Search, Required: query.Required},
+		Model:         q.Model,
+		Context:       q.Context,
+		rawConditions: q.rawConditions,
+	}
+	countDB := countBuilder.getDBWithModel()
+	if countDB == nil {
+		return WrapDBError(errors.New("database not initialized"))
+	}
 
-	// 先获取总数（不包含分页和关联数据）
-	countDB, err := ParseQuery(Query{
-		Filter:   query.Filter,
+	countParsedDB, err := ParseQuery(Query{
 		Search:   query.Search,
 		Required: query.Required,
-	}, db)
+	}, countDB)
 	if err != nil {
 		return WrapDBError(err)
 	}
 
 	var total int64
-	if err := countDB.Count(&total).Error; err != nil {
+	if err := countParsedDB.Count(&total).Error; err != nil {
 		return WrapDBError(err)
 	}
 
 	// 再获取分页数据
-	dataDB, err := ParseQuery(query, q.getDBWithModel())
+	modelDB := q.getDBWithModel()
+	if modelDB == nil {
+		return WrapDBError(errors.New("database not initialized"))
+	}
+	dataDB, err := ParseQuery(query, modelDB)
 	if err != nil {
 		return WrapDBError(err)
 	}
@@ -164,7 +192,7 @@ func (q *QueryBuilder[T]) Page(pager *Pager, dest ...interface{}) error {
 	// 支持自定义数据
 	if len(dest) > 0 {
 		data := dest[0]
-		if err := dataDB.Find(&data).Error; err != nil {
+		if err := dataDB.Find(data).Error; err != nil {
 			return WrapDBError(err)
 		}
 		pager.Data = data
@@ -239,6 +267,7 @@ func (q *QueryBuilder[T]) Find(id interface{}, dest interface{}) error {
 
 	// 创建新的 QueryBuilder，保持所有字段
 	newBuilder := &QueryBuilder[T]{
+		DB:            q.DB,
 		TX:            q.TX,
 		Query:         newQuery,
 		Model:         q.Model,
@@ -256,7 +285,6 @@ func (q *QueryBuilder[T]) Count() (int64, error) {
 
 	// 只解析搜索条件，不需要排序、分页等
 	countQuery := Query{
-		Filter:   query.Filter,
 		Search:   query.Search,
 		Required: query.Required,
 	}
@@ -287,7 +315,6 @@ func (q *QueryBuilder[T]) Sum(field string) (float64, error) {
 
 	// 只解析搜索条件
 	sumQuery := Query{
-		Filter:   query.Filter,
 		Search:   query.Search,
 		Required: query.Required,
 	}
@@ -298,7 +325,7 @@ func (q *QueryBuilder[T]) Sum(field string) (float64, error) {
 	}
 
 	var sum float64
-	if err := parsedDB.Select(fmt.Sprintf("COALESCE(SUM(%s), 0) as sum", DB.F(field))).Row().Scan(&sum); err != nil {
+	if err := parsedDB.Select(fmt.Sprintf("COALESCE(SUM(%s), 0) as sum", field)).Row().Scan(&sum); err != nil {
 		return 0, WrapDBError(err)
 	}
 
@@ -318,7 +345,6 @@ func (q *QueryBuilder[T]) Avg(field string) (float64, error) {
 
 	// 只解析搜索条件
 	avgQuery := Query{
-		Filter:   query.Filter,
 		Search:   query.Search,
 		Required: query.Required,
 	}
@@ -329,7 +355,7 @@ func (q *QueryBuilder[T]) Avg(field string) (float64, error) {
 	}
 
 	var avg float64
-	if err := parsedDB.Select(fmt.Sprintf("COALESCE(AVG(%s), 0) as avg", DB.F(field))).Row().Scan(&avg); err != nil {
+	if err := parsedDB.Select(fmt.Sprintf("COALESCE(AVG(%s), 0) as avg", field)).Row().Scan(&avg); err != nil {
 		return 0, WrapDBError(err)
 	}
 
@@ -359,6 +385,7 @@ func (q *QueryBuilder[T]) ExistsById(id interface{}) (bool, error) {
 		},
 	}
 	newBuilder := &QueryBuilder[T]{
+		DB:            q.DB,
 		TX:            q.TX,
 		Query:         query,
 		Model:         q.Model,

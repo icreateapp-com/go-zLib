@@ -11,7 +11,7 @@ import (
 
 // Equal 判断两个值是否相等
 func Equal(a, b interface{}) bool {
-	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+	return reflect.DeepEqual(a, b)
 }
 
 // GreaterThanLength 判断a的长度是否大于b
@@ -316,4 +316,12 @@ func GetValueInMap[T any](values map[string]interface{}, key string) (*T, error)
 	}
 
 	return &r, nil
+}
+
+// FirstOrDefault 从可变参数中获取第一个值，如果为空则返回默认值
+func FirstOrDefault[T any](values []T, defaultValue T) T {
+	if len(values) > 0 {
+		return values[0]
+	}
+	return defaultValue
 }

@@ -1,0 +1,91 @@
+package http_server
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+
+	"github.com/icreateapp-com/go-zLib/z/providers/config_provider"
+	"github.com/icreateapp-com/go-zLib/z/providers/logger_provider"
+	"github.com/icreateapp-com/go-zLib/z/providers/trace_provider"
+	"github.com/icreateapp-com/go-zLib/z/servers/http_server/http_server_middlewares"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/fx"
+)
+
+type HttpMiddlewaresIn struct {
+	fx.In
+
+	Items []gin.HandlerFunc `group:"http_middlewares"`
+}
+
+type TraceProviderIn struct {
+	fx.In
+
+	TraceProvider *trace_provider.Trace `optional:"true"`
+}
+
+type RoutesIn struct {
+	fx.In
+
+	Engine *gin.Engine
+	Routes []RouteRegister `group:"routes"`
+}
+
+type RouteRegister func(r *gin.Engine)
+
+func NewHttpServer(in HttpMiddlewaresIn, tpIn TraceProviderIn, cfg *config_provider.Config, log *logger_provider.Logger) *gin.Engine {
+	// set mode
+	if !cfg.GetBool("app.debug", true) {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	// instance engine
+	r := gin.New()
+
+	// default middlewares
+	r.Use(gin.Logger())
+	if tpIn.TraceProvider != nil {
+		r.Use(http_server_middlewares.TraceChainMiddleware(tpIn.TraceProvider, log))
+		r.Use(http_server_middlewares.RecoveryMiddleware(log))
+	} else {
+		r.Use(gin.Recovery())
+	}
+
+	// injected middlewares
+	r.Use(in.Items...)
+
+	return r
+}
+
+func RegisterRoutes(in RoutesIn) {
+	for _, register := range in.Routes {
+		register(in.Engine)
+	}
+}
+
+func RegisterHTTPServer(lc fx.Lifecycle, r *gin.Engine, cfg *config_provider.Config, log *logger_provider.Logger) {
+	srv := &http.Server{
+		Addr:    fmt.Sprintf("%s:%d", cfg.GetString("http.host"), cfg.GetInt("http.port")),
+		Handler: r,
+	}
+
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			log.Infow("start http server", "addr", srv.Addr)
+			go srv.ListenAndServe()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			log.Infow("stop http server", "addr", srv.Addr)
+			return srv.Shutdown(ctx)
+		},
+	})
+}
+
+var HttpServerModule = fx.Options(
+	fx.Provide(NewHttpServer),
+	fx.Invoke(RegisterHTTPServer),
+	fx.Invoke(RegisterRoutes),
+)

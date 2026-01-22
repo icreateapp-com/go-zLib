@@ -2,6 +2,7 @@ package z
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -16,7 +17,7 @@ type StreamSender struct {
 func NewStreamSender(ctx *gin.Context) *StreamSender {
 	f, ok := ctx.Writer.(http.Flusher)
 	if !ok {
-		Error.Println("stream error: not support flusher")
+		fmt.Println("stream error: not support flusher")
 	}
 
 	ctx.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -35,19 +36,19 @@ func NewStreamSender(ctx *gin.Context) *StreamSender {
 // writeData 写入数据到响应流
 func (e *StreamSender) writeData(data []byte) error {
 	if e.Context == nil || e.Context.Writer == nil {
-		Error.Println("stream error: context or writer is nil")
+		fmt.Println("stream error: context or writer is nil")
 		return errors.New("context or writer is nil")
 	}
 	if cn, ok := e.Context.Writer.(http.CloseNotifier); ok {
 		select {
 		case <-cn.CloseNotify():
-			Error.Println("stream error: client closed connection")
+			fmt.Println("stream error: client closed connection")
 			return errors.New("client closed connection")
 		default:
 		}
 	}
 	if _, err := e.Context.Writer.Write(data); err != nil {
-		Error.Printf("stream error: write failed: %v", err)
+		fmt.Printf("stream error: write failed: %v", err)
 		return err
 	}
 	return nil
@@ -56,12 +57,12 @@ func (e *StreamSender) writeData(data []byte) error {
 // SendMessage 发送普通消息
 func (e *StreamSender) SendMessage(message string) {
 	if e.Context == nil || e.Context.Writer == nil {
-		Error.Println("stream error: context or writer is nil in SendMessage")
+		fmt.Println("stream error: context or writer is nil in SendMessage")
 		return
 	}
 	data := []byte("event: message\ndata: " + message + "\n\n")
 	if err := e.writeData(data); err != nil {
-		Error.Printf("stream error: SendMessage failed: %v", err)
+		fmt.Printf("stream error: SendMessage failed: %v", err)
 		return
 	}
 	e.flusher.Flush()
@@ -70,12 +71,12 @@ func (e *StreamSender) SendMessage(message string) {
 // SendError 发送错误消息
 func (e *StreamSender) SendError(errMsg string) {
 	if e.Context == nil || e.Context.Writer == nil {
-		Error.Println("stream error: context or writer is nil in SendError")
+		fmt.Println("stream error: context or writer is nil in SendError")
 		return
 	}
 	data := []byte("event: error\ndata: " + errMsg + "\n\n")
 	if err := e.writeData(data); err != nil {
-		Error.Printf("stream error: SendError failed: %v", err)
+		fmt.Printf("stream error: SendError failed: %v", err)
 		return
 	}
 	e.flusher.Flush()
@@ -84,12 +85,12 @@ func (e *StreamSender) SendError(errMsg string) {
 // Done 结束流式响应
 func (e *StreamSender) Done() {
 	if e.flusher == nil {
-		Error.Println("stream error: flusher not initialized")
+		fmt.Println("stream error: flusher not initialized")
 		return
 	}
 
 	if _, err := e.Context.Writer.Write([]byte("\n\n")); err != nil {
-		Error.Printf("stream error: %v", err)
+		fmt.Printf("stream error: %v", err)
 		return
 	}
 

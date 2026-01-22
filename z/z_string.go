@@ -3,6 +3,7 @@ package z
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"regexp"
 	"strconv"
 	"strings"
@@ -158,4 +159,14 @@ func ClearJsonString(response string) string {
 	response = strings.TrimPrefix(response, "```")
 	response = strings.TrimSuffix(response, "```")
 	return strings.TrimSpace(response)
+}
+
+// GenerateRandomString 生成指定长度的随机字符串
+func GenerateRandomString(length int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
 }
