@@ -454,6 +454,6 @@ func ToMarkdownTable(headers []string, data []map[string]interface{}) (string, e
 	return tableStr, nil
 }
 
-func PtrBool(b bool) *bool {
-	return &b
+func Ptr[T any](v T) *T {
+	return &v
 }
