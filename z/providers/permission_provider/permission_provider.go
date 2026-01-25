@@ -127,23 +127,22 @@ func (p *Provider) getCallback() Callback {
 	return p.callback
 }
 
-func (p *Provider) cacheKey(tenantType, tenantID, userID string) string {
-	return fmt.Sprintf("permission_%s_%s_%s", tenantType, tenantID, userID)
+func (p *Provider) cacheKey(tenantType, userID string) string {
+	return fmt.Sprintf("permission_%s_%s", tenantType, userID)
 }
 
 // GetUserPermissions 获取用户权限（优先 Redis，miss 时回源并回填）
 func (p *Provider) GetUserPermissions(ctx context.Context, tenantType, tenantID, userID string) ([]Permission, error) {
 	tenantType = strings.TrimSpace(tenantType)
-	tenantID = strings.TrimSpace(tenantID)
 	userID = strings.TrimSpace(userID)
-	if tenantType == "" || tenantID == "" || userID == "" {
-		return nil, fmt.Errorf("invalid tenantType/tenantID/userID")
+	if tenantType == "" || userID == "" {
+		return nil, fmt.Errorf("invalid tenantType/userID")
 	}
 	if p.redis == nil {
 		return nil, fmt.Errorf("redis not enabled")
 	}
 
-	key := p.cacheKey(tenantType, tenantID, userID)
+	key := p.cacheKey(tenantType, userID)
 
 	// 1) 尝试从 redis 取
 	var cached []Permission
@@ -176,16 +175,15 @@ func (p *Provider) GetUserPermissions(ctx context.Context, tenantType, tenantID,
 // RefreshUserPermissions 刷新用户权限（供业务层主动调用）
 func (p *Provider) RefreshUserPermissions(ctx context.Context, tenantType, tenantID, userID string, permissions []Permission) error {
 	tenantType = strings.TrimSpace(tenantType)
-	tenantID = strings.TrimSpace(tenantID)
 	userID = strings.TrimSpace(userID)
-	if tenantType == "" || tenantID == "" || userID == "" {
-		return fmt.Errorf("invalid tenantType/tenantID/userID")
+	if tenantType == "" || userID == "" {
+		return fmt.Errorf("invalid tenantType/userID")
 	}
 	if p.redis == nil {
 		return fmt.Errorf("redis not enabled")
 	}
 
-	key := p.cacheKey(tenantType, tenantID, userID)
+	key := p.cacheKey(tenantType, userID)
 
 	if len(permissions) == 0 {
 		// 权限为空，删除缓存
@@ -198,16 +196,15 @@ func (p *Provider) RefreshUserPermissions(ctx context.Context, tenantType, tenan
 // ClearPermissions 清理权限缓存（供业务层主动调用）
 func (p *Provider) ClearPermissions(ctx context.Context, tenantType, tenantID, userID string) error {
 	tenantType = strings.TrimSpace(tenantType)
-	tenantID = strings.TrimSpace(tenantID)
 	userID = strings.TrimSpace(userID)
-	if tenantType == "" || tenantID == "" || userID == "" {
-		return fmt.Errorf("invalid tenantType/tenantID/userID")
+	if tenantType == "" || userID == "" {
+		return fmt.Errorf("invalid tenantType/userID")
 	}
 	if p.redis == nil {
 		return fmt.Errorf("redis not enabled")
 	}
 
-	key := p.cacheKey(tenantType, tenantID, userID)
+	key := p.cacheKey(tenantType, userID)
 	return p.redis.Delete(key)
 }
 
@@ -234,7 +231,11 @@ func (p *Provider) PermissionMiddleware(permissions string) gin.HandlerFunc {
 		}
 
 		// 从 gin.Context 获取 auth 信息（由 auth_provider.AuthMiddleware 设置）
+		// guard 兼容两种写法："auth.guard"（新）和 "guard"（旧）
 		guardAny, _ := c.Get("auth.guard")
+		if guardAny == nil {
+			guardAny, _ = c.Get("guard")
+		}
 		userIDAny, _ := c.Get("auth.user_id")
 
 		guard, _ := guardAny.(string)
@@ -253,8 +254,20 @@ func (p *Provider) PermissionMiddleware(permissions string) gin.HandlerFunc {
 			return
 		}
 
+		// tenantType 直接由 guard 推导（与 auth_provider.Authenticate 写入的 auth.guard 对齐）
+		tenantType := guard
+		if tenantType == "" {
+			c.JSON(403, gin.H{
+				"success": false,
+				"message": "missing tenant context",
+				"code":    403,
+			})
+			c.Abort()
+			return
+		}
+
 		// 获取用户权限
-		perms, err := p.GetUserPermissions(c.Request.Context(), guard, guard, userID)
+		perms, err := p.GetUserPermissions(c.Request.Context(), tenantType, "", userID)
 		if err != nil {
 			c.JSON(403, gin.H{
 				"success": false,
@@ -360,12 +373,11 @@ func (p *Provider) checkPermissions(perms []Permission, whitelist map[string][]s
 // CheckPermission 检查权限（直接方法，供业务层调用）
 func (p *Provider) CheckPermission(ctx context.Context, tenantType, tenantID, userID, resource, action string) (bool, error) {
 	tenantType = strings.TrimSpace(tenantType)
-	tenantID = strings.TrimSpace(tenantID)
 	userID = strings.TrimSpace(userID)
 	resource = strings.TrimSpace(resource)
 	action = strings.TrimSpace(action)
 
-	if tenantType == "" || tenantID == "" || userID == "" || resource == "" || action == "" {
+	if tenantType == "" || userID == "" || resource == "" || action == "" {
 		return false, fmt.Errorf("invalid parameters")
 	}
 
@@ -400,7 +412,7 @@ func (p *Provider) AddRoleForUser(tenantType, tenantID, userID, roleCode string)
 
 	// 清理用户权限缓存
 	ctx := context.Background()
-	if err := p.ClearPermissions(ctx, tenantType, tenantID, userID); err != nil {
+	if err := p.ClearPermissions(ctx, tenantType, "", userID); err != nil {
 		if p.log != nil {
 			p.log.Warnw("failed to clear user permissions", "error", err)
 		}
@@ -426,7 +438,7 @@ func (p *Provider) DeleteRoleForUser(tenantType, tenantID, userID, roleCode stri
 
 	// 清理用户权限缓存
 	ctx := context.Background()
-	if err := p.ClearPermissions(ctx, tenantType, tenantID, userID); err != nil {
+	if err := p.ClearPermissions(ctx, tenantType, "", userID); err != nil {
 		if p.log != nil {
 			p.log.Warnw("failed to clear user permissions", "error", err)
 		}
