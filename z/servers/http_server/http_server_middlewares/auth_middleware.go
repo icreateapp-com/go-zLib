@@ -35,6 +35,12 @@ func AuthMiddleware(ap *auth_provider.Auth) gin.HandlerFunc {
 			return
 		}
 
+		// 跳过 OPTIONS 请求（CORS 预检）
+		if c.Request.Method == "OPTIONS" {
+			c.Next()
+			return
+		}
+
 		// FIX: 修复 Guard 与 AuthMiddleware 执行顺序不确定导致 guard 为空的问题
 		// 如果未读取到 guard，则回退到从 gin.Context 路径前缀推导 guard（利用 Auth.AuthenticateRequest 的 matchGuard 逻辑），并写回 c.Set("guard", guardName) 以兼容旧路由注册顺序
 		if guardRaw, ok := c.Get("guard"); !ok || guardRaw == nil {
