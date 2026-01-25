@@ -105,7 +105,7 @@ func (a *Auth) Init(cfg *config_provider.Config) error {
 		gc.Token = cfg.GetString("auth.guards." + g + ".token")
 		gc.Prefix = cfg.GetString("auth.guards." + g + ".prefix")
 		gc.Cache = cfg.GetString("auth.guards." + g + ".cache")
-		gc.SSOEnabled = cfg.GetBool("auth.guards." + g + ".sso_enabled")
+		gc.SingleDeviceEnabled = cfg.GetBool("auth.guards." + g + ".single_device_enabled")
 		gc.Anonymity = cfg.GetStringSlice("auth.guards." + g + ".anonymity")
 		a.guards[g] = gc
 		if gc.Prefix != "" {
@@ -198,6 +198,11 @@ func (a *Auth) deleteCache(guardName, key string) error {
 // getCacheKey 生成缓存键
 func (a *Auth) getCacheKey(guardName, userID, device string) string {
 	return fmt.Sprintf("auth_%s_%s_%s", guardName, userID, device)
+}
+
+// getCacheKeyWithoutDevice 生成不带设备的缓存键
+func (a *Auth) getCacheKeyWithoutDevice(guardName, userID string) string {
+	return fmt.Sprintf("auth_%s_%s", guardName, userID)
 }
 
 // getUserDevicesKey 生成用户设备列表缓存键（用于SSO清理）
@@ -339,7 +344,7 @@ func (a *Auth) addUserDevice(guardName, userID, device string) error {
 }
 
 // Login 用户登录，生成JWT token并存储到缓存
-func (a *Auth) Login(guard string, userID string, device string, duration time.Duration, data ...interface{}) (string, error) {
+func (a *Auth) Login(guard string, userID string, duration time.Duration, data ...interface{}) (string, error) {
 	// 验证参数
 	if strings.TrimSpace(guard) == "" {
 		return "", fmt.Errorf("guard name cannot be empty")
@@ -347,18 +352,16 @@ func (a *Auth) Login(guard string, userID string, device string, duration time.D
 	if strings.TrimSpace(userID) == "" {
 		return "", fmt.Errorf("user ID cannot be empty")
 	}
-	if strings.TrimSpace(device) == "" {
-		device = "default" // 如果设备为空，使用默认值
-	}
 
 	guardConfig, exists := a.guards[guard]
 	if !exists {
 		return "", fmt.Errorf("guard '%s' not found", guard)
 	}
 
-	// 如果启用了SSO，清除该用户在当前guard下的所有其他设备会话
-	if guardConfig.SSOEnabled {
-		a.clearUserAllDevices(guard, userID)
+	// 如果启用了单设备登录，清除该用户在当前guard下的所有会话
+	if guardConfig.SingleDeviceEnabled {
+		cacheKey := a.getCacheKeyWithoutDevice(guard, userID)
+		a.deleteCache(guard, cacheKey)
 	}
 
 	// 创建JWT claims
@@ -385,7 +388,6 @@ func (a *Auth) Login(guard string, userID string, device string, duration time.D
 	sessionData := map[string]interface{}{
 		"user_id":    userID,
 		"guard_name": guard,
-		"device":     device,
 		"login_time": time.Now().Unix(),
 		"expires_at": time.Now().Add(duration).Unix(),
 	}
@@ -395,44 +397,29 @@ func (a *Auth) Login(guard string, userID string, device string, duration time.D
 		sessionData["data"] = data[0]
 	}
 
-	// 存储到缓存
-	cacheKey := a.getCacheKey(guard, userID, device)
+	// 存储到缓存（不使用 device）
+	cacheKey := a.getCacheKeyWithoutDevice(guard, userID)
 	if err := a.setCache(guard, cacheKey, sessionData, duration); err != nil {
 		return "", fmt.Errorf("failed to store session: %w", err)
-	}
-
-	// 将设备添加到用户设备列表（除非SSO启用，因为SSO时已清除所有设备）
-	if !guardConfig.SSOEnabled {
-		a.addUserDevice(guard, userID, device)
-	} else {
-		// SSO启用时，只添加当前设备
-		a.addUserDevice(guard, userID, device)
 	}
 
 	return tokenString, nil
 }
 
-// Logout 登出指定设备
-func (a *Auth) Logout(guard, userID, device string) error {
+// Logout 登出
+func (a *Auth) Logout(guard, userID string) error {
 	if strings.TrimSpace(guard) == "" {
 		return fmt.Errorf("guard name cannot be empty")
 	}
 	if strings.TrimSpace(userID) == "" {
 		return fmt.Errorf("user ID cannot be empty")
 	}
-	if strings.TrimSpace(device) == "" {
-		device = "default"
-	}
-
-	cacheKey := a.getCacheKey(guard, userID, device)
 
 	// 清除缓存中的登录信息
+	cacheKey := a.getCacheKeyWithoutDevice(guard, userID)
 	if err := a.deleteCache(guard, cacheKey); err != nil {
 		return fmt.Errorf("failed to clear cache: %w", err)
 	}
-
-	// 从设备列表中移除该设备
-	a.removeUserDevice(guard, userID, device)
 
 	return nil
 }
@@ -585,35 +572,25 @@ func (a *Auth) authenticateJWT(guardName, token string) (string, map[string]inte
 		return "", nil, ErrGuardMismatch
 	}
 
-	// JWT认证需要遍历用户的所有设备来查找有效会话
-	// 首先获取用户的设备列表
-	devicesKey := a.getUserDevicesKey(guardName, claims.UserID)
-	devices, exists := a.getCache(guardName, devicesKey)
+	// 检查JWT是否已过期（关键！）
+	if claims.ExpiresAt != nil && claims.ExpiresAt.Before(time.Now()) {
+		return "", nil, ErrTokenExpired
+	}
+
+	// 直接检查JWT token对应的缓存（不使用 device）
+	cacheKey := a.getCacheKeyWithoutDevice(guardName, claims.UserID)
+	sessionData, exists := a.getCache(guardName, cacheKey)
 
 	if !exists {
 		return "", nil, ErrSessionNotFound
 	}
 
-	// 遍历设备列表，查找有效的会话
-	if deviceList, ok := devices.([]interface{}); ok {
-		for _, deviceInterface := range deviceList {
-			if device, ok := deviceInterface.(string); ok {
-				cacheKey := a.getCacheKey(guardName, claims.UserID, device)
-				sessionData, exists := a.getCache(guardName, cacheKey)
-
-				if exists {
-					sessionMap, ok := sessionData.(map[string]interface{})
-					if ok {
-						// 确保会话数据中包含设备信息
-						sessionMap["device"] = device
-						return claims.UserID, sessionMap, nil
-					}
-				}
-			}
-		}
+	sessionMap, ok := sessionData.(map[string]interface{})
+	if !ok {
+		return "", nil, ErrSessionInvalid
 	}
 
-	return "", nil, ErrSessionNotFound
+	return claims.UserID, sessionMap, nil
 }
 
 // Authenticate 供 HTTP 中间件使用的鉴权入口：

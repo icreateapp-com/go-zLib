@@ -20,12 +20,12 @@ const (
 
 // GuardConfig guard配置结构
 type GuardConfig struct {
-	Type       string   `json:"type"`        // jwt | token
-	Token      string   `json:"token"`       // 固定令牌
-	Prefix     string   `json:"prefix"`      // 路由前缀
-	Anonymity  []string `json:"anonymity"`   // 匿名路由列表
-	Cache      string   `json:"cache"`       // memory | redis
-	SSOEnabled bool     `json:"sso_enabled"` // 单点登录开关
+	Type                string   `json:"type"`                  // jwt | token
+	Token               string   `json:"token"`                 // 固定令牌
+	Prefix              string   `json:"prefix"`                // 路由前缀
+	Anonymity           []string `json:"anonymity"`             // 匿名路由列表
+	Cache               string   `json:"cache"`                 // memory | redis
+	SingleDeviceEnabled bool     `json:"single_device_enabled"` // 单设备登录开关（默认 false）
 }
 
 // AuthContext 认证上下文结构
