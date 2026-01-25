@@ -1,20 +1,21 @@
-package http_server_middlewares
+package auth_provider
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/icreateapp-com/go-zLib/z"
-	"github.com/icreateapp-com/go-zLib/z/providers/auth_provider"
 	"go.uber.org/fx"
 )
 
+// WrappedGroup 包装 gin.RouterGroup，提供 Guard 方法
 type WrappedGroup struct {
 	group *gin.RouterGroup
 }
 
+// WrapGroup 创建 WrappedGroup 实例
 func WrapGroup(group *gin.RouterGroup) *WrappedGroup {
 	return &WrappedGroup{group: group}
 }
 
+// Guard 设置 guard 值到 gin.Context
 func (wg *WrappedGroup) Guard(guards string) *gin.RouterGroup {
 	if wg == nil || wg.group == nil {
 		return nil
@@ -28,7 +29,7 @@ func (wg *WrappedGroup) Guard(guards string) *gin.RouterGroup {
 }
 
 // AuthMiddleware HTTP认证中间件
-func AuthMiddleware(ap *auth_provider.Auth) gin.HandlerFunc {
+func AuthMiddleware(ap *Auth) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if ap == nil {
 			c.Next()
@@ -62,23 +63,21 @@ func AuthMiddleware(ap *auth_provider.Auth) gin.HandlerFunc {
 		if !success {
 			// 处理友好的错误消息
 			var errorMsg string
-			var errorCode string
 
-			if authErr, ok := err.(*auth_provider.AuthError); ok {
+			if authErr, ok := err.(*AuthError); ok {
 				errorMsg = authErr.Message
-				errorCode = authErr.Code
 			} else {
 				// 如果不是AuthError，转换为友好错误
-				friendlyErr := auth_provider.ConvertToFriendlyError(err)
+				friendlyErr := ConvertToFriendlyError(err)
 				errorMsg = friendlyErr.Message
-				errorCode = friendlyErr.Code
 			}
 
 			// 返回结构化的错误响应
-			z.Failure(c, map[string]interface{}{
-				"error":   errorCode,
+			c.JSON(401, gin.H{
+				"success": false,
 				"message": errorMsg,
-			}, z.StatusUnauthorized, 401)
+				"code":    401,
+			})
 			c.Abort()
 			return
 		}
@@ -88,6 +87,7 @@ func AuthMiddleware(ap *auth_provider.Auth) gin.HandlerFunc {
 	}
 }
 
+// AuthMiddlewareModule fx 模块
 var AuthMiddlewareModule = fx.Provide(
 	fx.Annotate(
 		AuthMiddleware,
