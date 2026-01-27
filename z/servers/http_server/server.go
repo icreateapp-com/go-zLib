@@ -2,9 +2,14 @@ package http_server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
+	"github.com/gin-contrib/static"
 	"github.com/icreateapp-com/go-zLib/z/providers/config_provider"
 	"github.com/icreateapp-com/go-zLib/z/providers/logger_provider"
 	"github.com/icreateapp-com/go-zLib/z/providers/trace_provider"
@@ -35,7 +40,7 @@ type RoutesIn struct {
 
 type RouteRegister func(r *gin.Engine)
 
-func NewHttpServer(in HttpMiddlewaresIn, tpIn TraceProviderIn, cfg *config_provider.Config, log *logger_provider.Logger) *gin.Engine {
+func NewHttpServer(in HttpMiddlewaresIn, tpIn TraceProviderIn, cfg *config_provider.Config, log *logger_provider.Logger) (*gin.Engine, error) {
 	// set mode
 	if !cfg.GetBool("app.debug", true) {
 		gin.SetMode(gin.ReleaseMode)
@@ -56,7 +61,28 @@ func NewHttpServer(in HttpMiddlewaresIn, tpIn TraceProviderIn, cfg *config_provi
 	// injected middlewares
 	r.Use(in.Items...)
 
-	return r
+	// static directory
+	staticDir := cfg.GetString("http.static_dir")
+	staticDir = strings.TrimSpace(staticDir)
+	if staticDir != "" {
+		cleaned := filepath.Clean(staticDir)
+		if cleaned == "/" {
+			return nil, errors.New("invalid http.static_dir: cannot be '/' ")
+		}
+		if filepath.IsAbs(cleaned) {
+			return nil, fmt.Errorf("invalid http.static_dir: must be a relative directory, got %q", staticDir)
+		}
+		info, err := os.Stat(cleaned)
+		if err != nil {
+			return nil, fmt.Errorf("invalid http.static_dir: %q not found: %w", staticDir, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("invalid http.static_dir: %q is not a directory", staticDir)
+		}
+		r.Use(static.Serve("/", static.LocalFile(cleaned, false)))
+	}
+
+	return r, nil
 }
 
 func RegisterRoutes(in RoutesIn) {
