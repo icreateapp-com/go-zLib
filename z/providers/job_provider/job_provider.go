@@ -320,6 +320,13 @@ func (c *JobClient) AddJob(ctx context.Context, name string, payload any, opt *A
 
 	info, err := c.client.EnqueueContext(ctx, task, opts...)
 	if err != nil {
+		// asynq 在相同 TaskID 已存在时会返回冲突错误；对业务层来说这是幂等场景，自动忽略并返回成功
+		if strings.Contains(err.Error(), "task ID conflicts with another task") {
+			if c.log != nil {
+				c.log.Infow("job already exists, skip enqueue", "name", name, "id", jobID)
+			}
+			return nil, nil
+		}
 		return nil, err
 	}
 
