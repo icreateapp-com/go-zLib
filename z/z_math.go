@@ -28,3 +28,19 @@ func Clamp[T constraints.Integer | constraints.Float](value, min, max T) T {
 	}
 	return value
 }
+
+// Min 返回两个可比较值中的较小值
+func Min[T constraints.Ordered](a, b T) T {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// Max 返回两个可比较值中的较大值
+func Max[T constraints.Ordered](a, b T) T {
+	if a > b {
+		return a
+	}
+	return b
+}

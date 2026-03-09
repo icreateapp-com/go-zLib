@@ -170,3 +170,27 @@ func MinSlice[T constraints.Ordered](slice []T) T {
 	}
 	return result
 }
+
+// FloorValueFromSlice 从给定的数字类型数组中获取小于等于目标值的最大元素（向小取整）
+// 例如：数组[1,2,3,4,5,6]，目标值4.5，返回4；目标值3，返回3
+func FloorValueFromSlice[T constraints.Integer | constraints.Float](slice []T, target T) (T, bool) {
+	if len(slice) == 0 {
+		var zero T
+		return zero, false
+	}
+
+	var result T
+	found := false
+
+	for _, v := range slice {
+		// 找到小于等于目标值的最大元素
+		if v <= target {
+			if !found || v > result {
+				result = v
+				found = true
+			}
+		}
+	}
+
+	return result, found
+}

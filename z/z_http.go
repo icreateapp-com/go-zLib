@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -394,13 +395,6 @@ func Download(url string, filePath string) error {
 	return nil
 }
 
-// GetUrl 生成当前服务器的 URL 地址
-func GetUrl(params string) string {
-	urlCfg, _ := Config.String("_config.url")
-
-	return fmt.Sprintf("%s/%s", strings.Trim(urlCfg, "/"), strings.Trim(params, "/"))
-}
-
 // IsUrl 判断是否是有效的URL
 func IsUrl(toTest string) bool {
 	_, err := url.ParseRequestURI(toTest)
@@ -500,4 +494,20 @@ func IsLocalIP(ip string) bool {
 	}
 
 	return false
+}
+
+// GetUrlFilename 获取 URL 的文件名
+func GetUrlFilename(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	// 取 path 最后的文件名（仍是编码的）
+	encodedName := path.Base(u.Path)
+	// URL 解码
+	fileName, err := url.PathUnescape(encodedName)
+	if err != nil {
+		return "", err
+	}
+	return fileName, nil
 }
