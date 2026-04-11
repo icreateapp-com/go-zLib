@@ -38,6 +38,7 @@ func TraceChainMiddleware(tp *trace_provider.Trace, log *logger_provider.Logger)
 		c.Writer.Header().Set("X-Trace-Id", traceID)
 		c.Request.Header.Set("X-Trace-Id", traceID)
 
+		ctx = trace_provider.WithTraceID(ctx, traceID)
 		c.Request = c.Request.WithContext(ctx)
 
 		span.SetAttributes(
