@@ -108,6 +108,13 @@ func NewWebSocketServer(in In) (Out, error) {
 		ms.Set("conn_id", meta.ConnID)
 		ms.Set("guard", meta.Guard)
 		ms.Set("user_id", meta.UserID)
+		if authCtx.Session != nil {
+			// 会话型 guard 在连接上下文中保存续期所需的最小状态，
+			// 后续消息到达时可按 touch_interval 节流续期。
+			ms.Set("auth.guard", authCtx.GuardName)
+			ms.Set("auth.token", authCtx.Token)
+			ms.Set("auth.next_touch_at", time.Now().Add(in.Auth.GetGuardTouchInterval(authCtx.GuardName)).Unix())
+		}
 	})
 
 	m.HandleDisconnect(func(ms *melody.Session) {
@@ -116,6 +123,32 @@ func NewWebSocketServer(in In) (Out, error) {
 
 	m.HandleMessage(func(ms *melody.Session, msg []byte) {
 		hub.Touch(ms)
+
+		// WebSocket 消息不会经过 HTTP 认证中间件，这里按 guard 的续期间隔
+		// 节流触发一次 session 续期，避免每条消息都写缓存。
+		authGuardValue, hasAuthGuard := ms.Get("auth.guard")
+		authTokenValue, hasAuthToken := ms.Get("auth.token")
+		if hasAuthGuard && hasAuthToken {
+			authGuard, _ := authGuardValue.(string)
+			authToken, _ := authTokenValue.(string)
+			if authGuard != "" && authToken != "" {
+				nextTouchAt := int64(0)
+				if nextTouchValue, exists := ms.Get("auth.next_touch_at"); exists {
+					if value, ok := nextTouchValue.(int64); ok {
+						nextTouchAt = value
+					}
+				}
+
+				nowUnix := time.Now().Unix()
+				if nextTouchAt == 0 || nowUnix >= nextTouchAt {
+					if _, err := in.Auth.TouchSession(authGuard, authToken); err != nil {
+						_ = ms.CloseWithMsg([]byte("unauthorized"))
+						return
+					}
+					ms.Set("auth.next_touch_at", time.Now().Add(in.Auth.GetGuardTouchInterval(authGuard)).Unix())
+				}
+			}
+		}
 
 		for _, mw := range in.MsgMws {
 			if mw == nil {

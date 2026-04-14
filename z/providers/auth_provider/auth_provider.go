@@ -4,18 +4,23 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/icreateapp-com/go-zLib/z/providers/config_provider"
 	"github.com/icreateapp-com/go-zLib/z/providers/logger_provider"
 	"github.com/icreateapp-com/go-zLib/z/providers/mem_cache_provider"
 	"github.com/icreateapp-com/go-zLib/z/providers/redis_provider"
 	"go.uber.org/fx"
+)
+
+const (
+	defaultSessionDuration      = 24 * time.Hour
+	defaultSessionTouchInterval = 5 * time.Minute
 )
 
 // Auth 鉴权 provider（fx 注入）
@@ -25,9 +30,8 @@ type Auth struct {
 	redis    *redis_provider.Redis
 	memCache *mem_cache_provider.MemCache
 
-	jwtSecret []byte
-	guards    map[string]*GuardConfig
-	sorted    []sortedGuard
+	guards map[string]*GuardConfig
+	sorted []sortedGuard
 }
 
 // In Auth 的 fx 入参
@@ -63,7 +67,7 @@ var AuthProviderModule = fx.Options(
 	fx.Provide(NewAuthProvider),
 )
 
-// Init 初始化 guards 与 jwt secret
+// Init 初始化 guards
 func (a *Auth) Init(cfg *config_provider.Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
@@ -72,9 +76,6 @@ func (a *Auth) Init(cfg *config_provider.Config) error {
 	a.guards = make(map[string]*GuardConfig)
 	a.sorted = nil
 
-	// 由于 Config 目前缺少 GetStringMapAny 之类的通用方法，这里按固定键路径读取。
-	// guard 列表通过 auth.guards.<name>.* 访问
-	// aiaop-server 的 config.yml 中 auth.guards 是 map，因此这里优先从 map key 枚举 guard。
 	guardMap := cfg.GetStringMap("auth.guards")
 	var guardList []string
 	if len(guardMap) > 0 {
@@ -84,7 +85,6 @@ func (a *Auth) Init(cfg *config_provider.Config) error {
 		}
 	}
 	if len(guardList) == 0 {
-		// 兼容显式 list（若有的话）
 		guardList = cfg.GetStringSlice("auth.guards_names")
 	}
 	if len(guardList) == 0 {
@@ -100,13 +100,16 @@ func (a *Auth) Init(cfg *config_provider.Config) error {
 		if g == "" {
 			continue
 		}
-		gc := &GuardConfig{}
-		gc.Type = cfg.GetString("auth.guards." + g + ".type")
-		gc.Token = cfg.GetString("auth.guards." + g + ".token")
-		gc.Prefix = cfg.GetString("auth.guards." + g + ".prefix")
-		gc.Cache = cfg.GetString("auth.guards." + g + ".cache")
-		gc.SingleDeviceEnabled = cfg.GetBool("auth.guards." + g + ".single_device_enabled")
-		gc.Anonymity = cfg.GetStringSlice("auth.guards." + g + ".anonymity")
+		gc := &GuardConfig{
+			Type:                 cfg.GetString("auth.guards." + g + ".type"),
+			Token:                cfg.GetString("auth.guards." + g + ".token"),
+			Prefix:               cfg.GetString("auth.guards." + g + ".prefix"),
+			Cache:                cfg.GetString("auth.guards." + g + ".cache"),
+			Duration:             cfg.GetInt("auth.guards." + g + ".duration"),
+			TouchInterval:        cfg.GetInt("auth.guards." + g + ".touch_interval"),
+			SingleSessionEnabled: cfg.GetBool("auth.guards." + g + ".single_session_enabled"),
+			Anonymity:            cfg.GetStringSlice("auth.guards." + g + ".anonymity"),
+		}
 		a.guards[g] = gc
 		if gc.Prefix != "" {
 			a.sorted = append(a.sorted, sortedGuard{name: g, prefix: gc.Prefix})
@@ -114,25 +117,13 @@ func (a *Auth) Init(cfg *config_provider.Config) error {
 	}
 
 	sort.Slice(a.sorted, func(i, j int) bool {
-		// prefix 越长越优先
 		return len(a.sorted[i].prefix) > len(a.sorted[j].prefix)
 	})
-
-	key := cfg.GetString("app.key")
-	if key == "" {
-		secret := make([]byte, 32)
-		if _, err := rand.Read(secret); err != nil {
-			return fmt.Errorf("failed to generate jwt secret: %w", err)
-		}
-		a.jwtSecret = secret
-	} else {
-		a.jwtSecret = []byte(key)
-	}
 
 	return nil
 }
 
-// extractToken 从token字符串中提取实际的JWT token，自动处理"Bearer "前缀
+// extractToken 从token字符串中提取实际token，自动处理 Bearer 前缀
 func (a *Auth) extractToken(token string) string {
 	token = strings.TrimSpace(token)
 	if strings.HasPrefix(strings.ToLower(token), "bearer ") {
@@ -195,25 +186,190 @@ func (a *Auth) deleteCache(guardName, key string) error {
 	return nil
 }
 
-// getCacheKey 生成缓存键
-func (a *Auth) getCacheKey(guardName, userID, device string) string {
-	return fmt.Sprintf("auth_%s_%s_%s", guardName, userID, device)
+func (a *Auth) getSessionCacheKey(guardName, tokenHash string) string {
+	return fmt.Sprintf("auth_session_%s_%s", guardName, tokenHash)
 }
 
-// getCacheKeyWithoutDevice 生成不带设备的缓存键
-func (a *Auth) getCacheKeyWithoutDevice(guardName, userID string) string {
-	return fmt.Sprintf("auth_%s_%s", guardName, userID)
+func (a *Auth) getUserSessionsKey(guardName, userID string) string {
+	return fmt.Sprintf("auth_sessions_%s_%s", guardName, userID)
 }
 
-// getUserDevicesKey 生成用户设备列表缓存键（用于SSO清理）
-func (a *Auth) getUserDevicesKey(guardName, userID string) string {
-	return fmt.Sprintf("auth_devices_%s_%s", guardName, userID)
-}
-
-// getTokenHash 生成token哈希值（用于固定token模式）
+// getTokenHash 生成 token 哈希值
 func (a *Auth) getTokenHash(token string) string {
 	hash := md5.Sum([]byte(token))
 	return fmt.Sprintf("%x", hash)
+}
+
+func (a *Auth) generateSessionToken() (string, error) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return "", fmt.Errorf("failed to generate session token: %w", err)
+	}
+	return hex.EncodeToString(secret), nil
+}
+
+func (a *Auth) getGuardDuration(guardName string) time.Duration {
+	guard, ok := a.guards[guardName]
+	if !ok || guard == nil || guard.Duration <= 0 {
+		return defaultSessionDuration
+	}
+	return time.Duration(guard.Duration) * time.Second
+}
+
+func (a *Auth) getGuardTouchInterval(guardName string) time.Duration {
+	guard, ok := a.guards[guardName]
+	if !ok || guard == nil || guard.TouchInterval <= 0 {
+		return defaultSessionTouchInterval
+	}
+	return time.Duration(guard.TouchInterval) * time.Second
+}
+
+// GetGuardTouchInterval 返回 guard 的最小续期间隔。
+func (a *Auth) GetGuardTouchInterval(guardName string) time.Duration {
+	return a.getGuardTouchInterval(guardName)
+}
+
+func (a *Auth) getSession(guardName, tokenHash string) (*SessionData, bool, error) {
+	key := a.getSessionCacheKey(guardName, tokenHash)
+	if a.isRedisCache(guardName) {
+		if a.redis == nil {
+			return nil, false, fmt.Errorf("redis not enabled")
+		}
+		var session SessionData
+		if err := a.redis.Get(key, &session); err != nil {
+			return nil, false, nil
+		}
+		return &session, true, nil
+	}
+	if a.memCache == nil {
+		return nil, false, fmt.Errorf("mem cache not enabled")
+	}
+	value, exists := a.memCache.Get(key)
+	if !exists {
+		return nil, false, nil
+	}
+	switch session := value.(type) {
+	case *SessionData:
+		return session, true, nil
+	case SessionData:
+		copy := session
+		return &copy, true, nil
+	default:
+		return nil, false, fmt.Errorf("invalid session data")
+	}
+}
+
+func (a *Auth) setSession(guardName string, session *SessionData, expiration time.Duration) error {
+	if session == nil {
+		return fmt.Errorf("session is nil")
+	}
+	return a.setCache(guardName, a.getSessionCacheKey(guardName, session.TokenHash), session, expiration)
+}
+
+func (a *Auth) deleteSession(guardName, tokenHash string) error {
+	return a.deleteCache(guardName, a.getSessionCacheKey(guardName, tokenHash))
+}
+
+func (a *Auth) getUserSessionHashes(guardName, userID string) ([]string, error) {
+	key := a.getUserSessionsKey(guardName, userID)
+	if a.isRedisCache(guardName) {
+		if a.redis == nil {
+			return nil, fmt.Errorf("redis not enabled")
+		}
+		var hashes []string
+		if err := a.redis.Get(key, &hashes); err != nil {
+			return []string{}, nil
+		}
+		return hashes, nil
+	}
+	if a.memCache == nil {
+		return nil, fmt.Errorf("mem cache not enabled")
+	}
+	value, exists := a.memCache.Get(key)
+	if !exists {
+		return []string{}, nil
+	}
+	switch hashes := value.(type) {
+	case []string:
+		return hashes, nil
+	case []interface{}:
+		result := make([]string, 0, len(hashes))
+		for _, item := range hashes {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result, nil
+	default:
+		return []string{}, nil
+	}
+}
+
+func (a *Auth) setUserSessionHashes(guardName, userID string, hashes []string) error {
+	key := a.getUserSessionsKey(guardName, userID)
+	if len(hashes) == 0 {
+		return a.deleteCache(guardName, key)
+	}
+	return a.setCache(guardName, key, hashes, a.getGuardDuration(guardName))
+}
+
+// touchUserSessionIndex 仅刷新用户会话索引的 TTL，避免续期时重复读写索引内容。
+func (a *Auth) touchUserSessionIndex(guardName, userID string, duration time.Duration) error {
+	key := a.getUserSessionsKey(guardName, userID)
+	if a.isRedisCache(guardName) {
+		if a.redis == nil {
+			return fmt.Errorf("redis not enabled")
+		}
+		return a.redis.Expire(key, duration)
+	}
+	if a.memCache == nil {
+		return fmt.Errorf("mem cache not enabled")
+	}
+	value, exists := a.memCache.Get(key)
+	if !exists {
+		return nil
+	}
+	a.memCache.Set(key, value, duration)
+	return nil
+}
+
+func (a *Auth) addUserSessionHash(guardName, userID, tokenHash string) error {
+	hashes, err := a.getUserSessionHashes(guardName, userID)
+	if err != nil {
+		return err
+	}
+	for _, hash := range hashes {
+		if hash == tokenHash {
+			return a.setUserSessionHashes(guardName, userID, hashes)
+		}
+	}
+	hashes = append(hashes, tokenHash)
+	return a.setUserSessionHashes(guardName, userID, hashes)
+}
+
+func (a *Auth) removeUserSessionHash(guardName, userID, tokenHash string) error {
+	hashes, err := a.getUserSessionHashes(guardName, userID)
+	if err != nil {
+		return err
+	}
+	filtered := make([]string, 0, len(hashes))
+	for _, hash := range hashes {
+		if hash != tokenHash {
+			filtered = append(filtered, hash)
+		}
+	}
+	return a.setUserSessionHashes(guardName, userID, filtered)
+}
+
+func (a *Auth) clearUserAllSessions(guardName, userID string) error {
+	hashes, err := a.getUserSessionHashes(guardName, userID)
+	if err != nil {
+		return err
+	}
+	for _, hash := range hashes {
+		_ = a.deleteSession(guardName, hash)
+	}
+	return a.setUserSessionHashes(guardName, userID, nil)
 }
 
 // AuthenticateRequest 根据 requestPath 选择 guard 并鉴权
@@ -255,14 +411,13 @@ func (a *Auth) AuthenticateByGuard(guardName string, tokenFromHeader string, tok
 		return true, guardName, nil, ErrTokenMissing
 	}
 
-	var userID string
-	var sessionData map[string]interface{}
+	var authCtx *AuthContext
 	var err error
 	switch guardCfg.Type {
 	case AuthTypeToken:
-		userID, sessionData, err = a.authenticateFixedToken(guardName, token, guardCfg)
-	case AuthTypeJWT:
-		userID, sessionData, err = a.authenticateJWT(guardName, token)
+		authCtx, err = a.authenticateFixedToken(guardName, token, guardCfg)
+	case AuthTypeSession:
+		authCtx, err = a.authenticateSession(guardName, token)
 	default:
 		err = ErrAuthTypeUnsupported
 	}
@@ -270,16 +425,14 @@ func (a *Auth) AuthenticateByGuard(guardName string, tokenFromHeader string, tok
 		return true, guardName, nil, convertToFriendlyError(err)
 	}
 
-	device := "default"
-	if sessionData != nil {
-		if v, ok := sessionData["device"]; ok {
-			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
-				device = strings.TrimSpace(s)
-			}
+	if guardCfg.Type == AuthTypeSession && authCtx != nil && authCtx.Session != nil {
+		if err := a.touchSessionIfNeeded(guardName, authCtx.Session); err != nil {
+			return true, guardName, nil, convertToFriendlyError(err)
 		}
+		authCtx.Data = authCtx.Session.Data
 	}
 
-	return true, guardName, &AuthContext{GuardName: guardName, UserID: userID, Device: device, Data: sessionData}, nil
+	return true, guardName, authCtx, nil
 }
 
 func (a *Auth) matchGuard(path string) (string, *GuardConfig) {
@@ -292,60 +445,123 @@ func (a *Auth) matchGuard(path string) (string, *GuardConfig) {
 	return "", nil
 }
 
-// clearUserAllDevices 清除用户在指定guard下的所有设备会话（用于SSO）
-func (a *Auth) clearUserAllDevices(guardName, userID string) error {
-	devicesKey := a.getUserDevicesKey(guardName, userID)
-
-	// 获取用户的设备列表
-	if devices, exists := a.getCache(guardName, devicesKey); exists {
-		if deviceList, ok := devices.([]interface{}); ok {
-			// 清除每个设备的会话
-			for _, deviceInterface := range deviceList {
-				if device, ok := deviceInterface.(string); ok {
-					cacheKey := a.getCacheKey(guardName, userID, device)
-					a.deleteCache(guardName, cacheKey)
-				}
-			}
-		}
+func (a *Auth) authenticateFixedToken(guardName, token string, guardConfig *GuardConfig) (*AuthContext, error) {
+	if token != guardConfig.Token {
+		return nil, ErrTokenInvalid
 	}
 
-	// 清除设备列表
-	a.deleteCache(guardName, devicesKey)
+	tokenHash := a.getTokenHash(token)
+	cacheKey := fmt.Sprintf("token_%s_%s", guardName, tokenHash)
+	sessionData, exists := a.getCache(guardName, cacheKey)
+	if !exists {
+		sessionData = map[string]interface{}{
+			"user_id":    tokenHash,
+			"guard_name": guardName,
+			"login_time": time.Now().Unix(),
+			"token_type": "fixed",
+		}
+		_ = a.setCache(guardName, cacheKey, sessionData, 24*365*time.Hour)
+	}
+
+	return &AuthContext{
+		GuardName: guardName,
+		UserID:    tokenHash,
+		Token:     token,
+		Data:      sessionData,
+	}, nil
+}
+
+func (a *Auth) authenticateSession(guardName, token string) (*AuthContext, error) {
+	tokenHash := a.getTokenHash(token)
+	session, exists, err := a.getSession(guardName, tokenHash)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrSessionNotFound
+	}
+	if session == nil || session.UserID == "" {
+		return nil, ErrSessionInvalid
+	}
+	if session.GuardName != "" && session.GuardName != guardName {
+		return nil, ErrTokenInvalid
+	}
+
+	return &AuthContext{
+		GuardName: guardName,
+		UserID:    session.UserID,
+		Token:     token,
+		Session:   session,
+		Data:      session.Data,
+	}, nil
+}
+
+func (a *Auth) touchSessionIfNeeded(guardName string, session *SessionData) error {
+	if session == nil {
+		return ErrSessionInvalid
+	}
+
+	duration := a.getGuardDuration(guardName)
+	touchInterval := a.getGuardTouchInterval(guardName)
+	now := time.Now()
+	lastSeenAt := time.Unix(session.LastSeenAt, 0)
+
+	if session.LastSeenAt > 0 && now.Sub(lastSeenAt) < touchInterval {
+		return nil
+	}
+
+	session.LastSeenAt = now.Unix()
+	session.ExpiresAt = now.Add(duration).Unix()
+	if err := a.setSession(guardName, session, duration); err != nil {
+		return err
+	}
+
+	if err := a.touchUserSessionIndex(guardName, session.UserID, duration); err != nil {
+		return err
+	}
+
 	return nil
 }
 
-// addUserDevice 将设备添加到用户的设备列表中
-func (a *Auth) addUserDevice(guardName, userID, device string) error {
-	devicesKey := a.getUserDevicesKey(guardName, userID)
-
-	var devices []string
-	if existingDevices, exists := a.getCache(guardName, devicesKey); exists {
-		if deviceList, ok := existingDevices.([]interface{}); ok {
-			for _, deviceInterface := range deviceList {
-				if d, ok := deviceInterface.(string); ok {
-					devices = append(devices, d)
-				}
-			}
-		}
+// TouchSession 按 token 触发 session 活跃续期。
+// 主要用于 WebSocket 这类没有经过 HTTP 中间件的长连接场景。
+func (a *Auth) TouchSession(guardName, token string) (*SessionData, error) {
+	if strings.TrimSpace(guardName) == "" {
+		return nil, fmt.Errorf("guard name cannot be empty")
 	}
 
-	// 检查设备是否已存在
-	for _, d := range devices {
-		if d == device {
-			return nil // 设备已存在，无需添加
-		}
+	token = a.extractToken(token)
+	if strings.TrimSpace(token) == "" {
+		return nil, ErrTokenMissing
 	}
 
-	// 添加新设备
-	devices = append(devices, device)
+	guardCfg, ok := a.guards[guardName]
+	if !ok {
+		return nil, ErrGuardNotFound
+	}
 
-	// 存储设备列表（设置较长的过期时间）
-	return a.setCache(guardName, devicesKey, devices, 24*time.Hour)
+	switch guardCfg.Type {
+	case AuthTypeToken:
+		return nil, nil
+	case AuthTypeSession:
+		authCtx, err := a.authenticateSession(guardName, token)
+		if err != nil {
+			return nil, convertToFriendlyError(err)
+		}
+		if authCtx == nil || authCtx.Session == nil {
+			return nil, ErrSessionInvalid
+		}
+		if err := a.touchSessionIfNeeded(guardName, authCtx.Session); err != nil {
+			return nil, convertToFriendlyError(err)
+		}
+		return authCtx.Session, nil
+	default:
+		return nil, ErrAuthTypeUnsupported
+	}
 }
 
-// Login 用户登录，生成JWT token并存储到缓存
+// Login 用户登录，生成 session token 并存储到缓存
 func (a *Auth) Login(guard string, userID string, duration time.Duration, data ...interface{}) (string, error) {
-	// 验证参数
 	if strings.TrimSpace(guard) == "" {
 		return "", fmt.Errorf("guard name cannot be empty")
 	}
@@ -357,74 +573,79 @@ func (a *Auth) Login(guard string, userID string, duration time.Duration, data .
 	if !exists {
 		return "", fmt.Errorf("guard '%s' not found", guard)
 	}
-
-	// 如果启用了单设备登录，清除该用户在当前guard下的所有会话
-	if guardConfig.SingleDeviceEnabled {
-		cacheKey := a.getCacheKeyWithoutDevice(guard, userID)
-		a.deleteCache(guard, cacheKey)
+	if guardConfig.Type != AuthTypeSession {
+		return "", fmt.Errorf("guard '%s' does not support session login", guard)
 	}
 
-	// 创建JWT claims
-	claims := MultiTenantClaims{
-		UserID:    userID,
-		GuardName: guard,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			NotBefore: jwt.NewNumericDate(time.Now()),
-			Issuer:    "go-zlib-auth",
-			Subject:   userID,
-		},
+	if duration <= 0 {
+		duration = a.getGuardDuration(guard)
 	}
 
-	// 创建token
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(a.jwtSecret)
+	if guardConfig.SingleSessionEnabled {
+		if err := a.clearUserAllSessions(guard, userID); err != nil {
+			return "", fmt.Errorf("failed to clear existing sessions: %w", err)
+		}
+	}
+
+	token, err := a.generateSessionToken()
 	if err != nil {
-		return "", fmt.Errorf("failed to sign token: %w", err)
+		return "", err
 	}
 
-	// 准备缓存数据
-	sessionData := map[string]interface{}{
-		"user_id":    userID,
-		"guard_name": guard,
-		"login_time": time.Now().Unix(),
-		"expires_at": time.Now().Add(duration).Unix(),
+	now := time.Now()
+	session := &SessionData{
+		TokenHash:  a.getTokenHash(token),
+		UserID:     userID,
+		GuardName:  guard,
+		LoginTime:  now.Unix(),
+		LastSeenAt: now.Unix(),
+		ExpiresAt:  now.Add(duration).Unix(),
 	}
-
-	// 如果传入了自定义数据，添加到会话中
 	if len(data) > 0 && data[0] != nil {
-		sessionData["data"] = data[0]
+		session.Data = data[0]
 	}
 
-	// 存储到缓存（不使用 device）
-	cacheKey := a.getCacheKeyWithoutDevice(guard, userID)
-	if err := a.setCache(guard, cacheKey, sessionData, duration); err != nil {
+	if err := a.setSession(guard, session, duration); err != nil {
 		return "", fmt.Errorf("failed to store session: %w", err)
 	}
+	if err := a.addUserSessionHash(guard, userID, session.TokenHash); err != nil {
+		_ = a.deleteSession(guard, session.TokenHash)
+		return "", fmt.Errorf("failed to index session: %w", err)
+	}
 
-	return tokenString, nil
+	return token, nil
 }
 
-// Logout 登出
-func (a *Auth) Logout(guard, userID string) error {
+// Logout 登出当前会话
+func (a *Auth) Logout(guard, token string) error {
 	if strings.TrimSpace(guard) == "" {
 		return fmt.Errorf("guard name cannot be empty")
 	}
-	if strings.TrimSpace(userID) == "" {
-		return fmt.Errorf("user ID cannot be empty")
+	token = a.extractToken(token)
+	if strings.TrimSpace(token) == "" {
+		return fmt.Errorf("token cannot be empty")
 	}
 
-	// 清除缓存中的登录信息
-	cacheKey := a.getCacheKeyWithoutDevice(guard, userID)
-	if err := a.deleteCache(guard, cacheKey); err != nil {
-		return fmt.Errorf("failed to clear cache: %w", err)
+	tokenHash := a.getTokenHash(token)
+	session, exists, err := a.getSession(guard, tokenHash)
+	if err != nil {
+		return fmt.Errorf("failed to load session: %w", err)
+	}
+	if !exists || session == nil {
+		return nil
+	}
+
+	if err := a.deleteSession(guard, tokenHash); err != nil {
+		return fmt.Errorf("failed to clear session: %w", err)
+	}
+	if err := a.removeUserSessionHash(guard, session.UserID, tokenHash); err != nil {
+		return fmt.Errorf("failed to clear session index: %w", err)
 	}
 
 	return nil
 }
 
-// LogoutAll 登出用户的所有设备
+// LogoutAll 登出用户的所有会话
 func (a *Auth) LogoutAll(guard, userID string) error {
 	if strings.TrimSpace(guard) == "" {
 		return fmt.Errorf("guard name cannot be empty")
@@ -433,170 +654,13 @@ func (a *Auth) LogoutAll(guard, userID string) error {
 		return fmt.Errorf("user ID cannot be empty")
 	}
 
-	// 清除所有设备会话
-	if err := a.clearUserAllDevices(guard, userID); err != nil {
-		return fmt.Errorf("failed to clear all devices: %w", err)
+	if err := a.clearUserAllSessions(guard, userID); err != nil {
+		return fmt.Errorf("failed to clear all sessions: %w", err)
 	}
-
 	return nil
 }
 
-// removeUserDevice 从用户设备列表中移除指定设备
-func (a *Auth) removeUserDevice(guardName, userID, device string) error {
-	devicesKey := a.getUserDevicesKey(guardName, userID)
-
-	var devices []string
-	if existingDevices, exists := a.getCache(guardName, devicesKey); exists {
-		if deviceList, ok := existingDevices.([]interface{}); ok {
-			for _, deviceInterface := range deviceList {
-				if d, ok := deviceInterface.(string); ok && d != device {
-					devices = append(devices, d)
-				}
-			}
-		}
-	}
-
-	// 更新设备列表
-	if len(devices) > 0 {
-		return a.setCache(guardName, devicesKey, devices, 24*time.Hour)
-	} else {
-		// 如果没有设备了，删除设备列表
-		return a.deleteCache(guardName, devicesKey)
-	}
-}
-
-// GetUserID 从 gin 上下文中获取当前登录用户的ID
-func (a *Auth) GetUserID(c *gin.Context) (string, error) {
-	if c == nil {
-		return "", fmt.Errorf("context is nil")
-	}
-	userID, exists := c.Get("auth.user_id")
-	if !exists {
-		return "", fmt.Errorf("user not authenticated")
-	}
-	return userID.(string), nil
-}
-
-// GetData 从 gin 上下文中获取当前登录用户的自定义数据
-func (a *Auth) GetData(c *gin.Context) (interface{}, error) {
-	if c == nil {
-		return nil, fmt.Errorf("context is nil")
-	}
-	data, _ := c.Get("auth.data")
-	return data, nil
-}
-
-// GetCurrentDevice 从 gin 上下文中获取当前设备标识
-func (a *Auth) GetCurrentDevice(c *gin.Context) (string, error) {
-	if c == nil {
-		return "", fmt.Errorf("context is nil")
-	}
-	device, exists := c.Get("auth.device")
-	if !exists {
-		return "", fmt.Errorf("device not found in context")
-	}
-	return device.(string), nil
-}
-
-// parseJWTToken 解析JWT token并返回声明信息
-func (a *Auth) parseJWTToken(tokenString string) (*MultiTenantClaims, error) {
-	if strings.TrimSpace(tokenString) == "" {
-		return nil, ErrTokenInvalid
-	}
-
-	// 解析JWT token
-	jwtToken, err := jwt.ParseWithClaims(tokenString, &MultiTenantClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, ErrTokenSignature
-		}
-		return a.jwtSecret, nil
-	})
-
-	if err != nil {
-		// 让convertToFriendlyError处理具体的JWT错误
-		return nil, err
-	}
-
-	if claims, ok := jwtToken.Claims.(*MultiTenantClaims); ok && jwtToken.Valid {
-		return claims, nil
-	}
-
-	return nil, ErrTokenInvalid
-}
-
-// authenticateFixedToken 固定token认证
-func (a *Auth) authenticateFixedToken(guardName, token string, guardConfig *GuardConfig) (string, map[string]interface{}, error) {
-	// 比较固定token
-	if token != guardConfig.Token {
-		return "", nil, ErrTokenInvalid
-	}
-
-	// 生成token哈希作为用户ID
-	tokenHash := a.getTokenHash(token)
-
-	// 检查缓存中是否存在会话
-	cacheKey := fmt.Sprintf("token_%s_%s", guardName, tokenHash)
-	sessionData, exists := a.getCache(guardName, cacheKey)
-
-	if !exists {
-		// 创建新的会话数据
-		sessionData = map[string]interface{}{
-			"user_id":    tokenHash,
-			"guard_name": guardName,
-			"login_time": time.Now().Unix(),
-			"token_type": "fixed",
-		}
-
-		// 存储到缓存（固定token永不过期，设置较长时间）
-		a.setCache(guardName, cacheKey, sessionData, 24*365*time.Hour)
-	}
-
-	sessionMap, ok := sessionData.(map[string]interface{})
-	if !ok {
-		return "", nil, ErrSessionInvalid
-	}
-
-	return tokenHash, sessionMap, nil
-}
-
-// authenticateJWT JWT认证
-func (a *Auth) authenticateJWT(guardName, token string) (string, map[string]interface{}, error) {
-	// 解析JWT token
-	claims, err := a.parseJWTToken(token)
-	if err != nil {
-		return "", nil, err
-	}
-
-	// 验证guard名称匹配
-	if claims.GuardName != guardName {
-		return "", nil, ErrGuardMismatch
-	}
-
-	// 检查JWT是否已过期（关键！）
-	if claims.ExpiresAt != nil && claims.ExpiresAt.Before(time.Now()) {
-		return "", nil, ErrTokenExpired
-	}
-
-	// 直接检查JWT token对应的缓存（不使用 device）
-	cacheKey := a.getCacheKeyWithoutDevice(guardName, claims.UserID)
-	sessionData, exists := a.getCache(guardName, cacheKey)
-
-	if !exists {
-		return "", nil, ErrSessionNotFound
-	}
-
-	sessionMap, ok := sessionData.(map[string]interface{})
-	if !ok {
-		return "", nil, ErrSessionInvalid
-	}
-
-	return claims.UserID, sessionMap, nil
-}
-
-// Authenticate 供 HTTP 中间件使用的鉴权入口：
-// - guard 从 gin.Context 的 "guard" 读取（支持逗号分隔多个 guard）
-// - token 从 header Authorization 或 query token 获取
-// - 成功后写入 gin.Context：auth.guard/auth.user_id/auth.device/auth.data
+// Authenticate 供 HTTP 中间件使用的鉴权入口
 func (a *Auth) Authenticate(c *gin.Context) (bool, string, error) {
 	if c == nil {
 		return true, "", nil
@@ -620,7 +684,7 @@ func (a *Auth) Authenticate(c *gin.Context) (bool, string, error) {
 
 	path := ""
 	if c.Request != nil && c.Request.URL != nil {
-		path = strings.TrimSpace(c.Request.URL.Path)
+		path = c.Request.URL.Path
 	}
 
 	guardList := strings.Split(guards, ",")
@@ -639,38 +703,22 @@ func (a *Auth) Authenticate(c *gin.Context) (bool, string, error) {
 			}
 		}
 
-		var userID string
-		var sessionData map[string]interface{}
-		var err error
-		switch guardCfg.Type {
-		case AuthTypeToken:
-			userID, sessionData, err = a.authenticateFixedToken(guardName, token, guardCfg)
-		case AuthTypeJWT:
-			userID, sessionData, err = a.authenticateJWT(guardName, token)
-		default:
-			err = ErrAuthTypeUnsupported
-		}
+		_, _, authCtx, err := a.AuthenticateByGuard(guardName, token, "")
 		if err != nil {
 			continue
 		}
-
-		device := "default"
-		if sessionData != nil {
-			if v, ok := sessionData["device"]; ok {
-				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
-					device = strings.TrimSpace(s)
-				}
-			}
+		if authCtx == nil {
+			continue
 		}
 
-		// 仅写入当前请求上下文
 		c.Set("auth.guard", guardName)
-		c.Set("auth.user_id", userID)
-		c.Set("auth.device", device)
-		if sessionData != nil {
-			if v, ok := sessionData["data"]; ok {
-				c.Set("auth.data", v)
-			}
+		c.Set("auth.user_id", authCtx.UserID)
+		c.Set("auth.token", authCtx.Token)
+		if authCtx.Session != nil {
+			c.Set("auth.session", authCtx.Session)
+		}
+		if authCtx.Data != nil {
+			c.Set("auth.data", authCtx.Data)
 		}
 
 		return true, guardName, nil
@@ -679,75 +727,59 @@ func (a *Auth) Authenticate(c *gin.Context) (bool, string, error) {
 	return false, "", ErrPermissionDenied
 }
 
-// GetUserDevices 获取用户的所有设备列表
-func (a *Auth) GetUserDevices(guard, userID string) ([]string, error) {
-	if strings.TrimSpace(guard) == "" {
-		return nil, fmt.Errorf("guard name cannot be empty")
+// GetUserID 从 gin 上下文中获取当前登录用户的ID
+func (a *Auth) GetUserID(c *gin.Context) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("context is nil")
 	}
-	if strings.TrimSpace(userID) == "" {
-		return nil, fmt.Errorf("user ID cannot be empty")
-	}
-
-	devicesKey := a.getUserDevicesKey(guard, userID)
-	devices, exists := a.getCache(guard, devicesKey)
-
+	userID, exists := c.Get("auth.user_id")
 	if !exists {
-		return []string{}, nil // 返回空列表而不是错误
+		return "", fmt.Errorf("user not authenticated")
 	}
-
-	var deviceList []string
-	if deviceSlice, ok := devices.([]interface{}); ok {
-		for _, deviceInterface := range deviceSlice {
-			if device, ok := deviceInterface.(string); ok {
-				deviceList = append(deviceList, device)
-			}
-		}
+	value, ok := userID.(string)
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("user not authenticated")
 	}
-
-	return deviceList, nil
+	return value, nil
 }
 
-// IsDeviceOnline 检查指定设备是否在线（有有效会话）
-func (a *Auth) IsDeviceOnline(guard, userID, device string) (bool, error) {
-	if strings.TrimSpace(guard) == "" {
-		return false, fmt.Errorf("guard name cannot be empty")
+// GetData 从 gin 上下文中获取当前登录用户的自定义数据
+func (a *Auth) GetData(c *gin.Context) (interface{}, error) {
+	if c == nil {
+		return nil, fmt.Errorf("context is nil")
 	}
-	if strings.TrimSpace(userID) == "" {
-		return false, fmt.Errorf("user ID cannot be empty")
-	}
-	if strings.TrimSpace(device) == "" {
-		return false, fmt.Errorf("device cannot be empty")
-	}
-
-	cacheKey := a.getCacheKey(guard, userID, device)
-	_, exists := a.getCache(guard, cacheKey)
-
-	return exists, nil
+	data, _ := c.Get("auth.data")
+	return data, nil
 }
 
-// GetDeviceInfo 获取设备的详细信息
-func (a *Auth) GetDeviceInfo(guard, userID, device string) (map[string]interface{}, error) {
-	if strings.TrimSpace(guard) == "" {
-		return nil, fmt.Errorf("guard name cannot be empty")
+// GetToken 从 gin 上下文中获取当前会话令牌
+func (a *Auth) GetToken(c *gin.Context) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("context is nil")
 	}
-	if strings.TrimSpace(userID) == "" {
-		return nil, fmt.Errorf("user ID cannot be empty")
-	}
-	if strings.TrimSpace(device) == "" {
-		return nil, fmt.Errorf("device cannot be empty")
-	}
-
-	cacheKey := a.getCacheKey(guard, userID, device)
-	sessionData, exists := a.getCache(guard, cacheKey)
-
+	token, exists := c.Get("auth.token")
 	if !exists {
-		return nil, fmt.Errorf("device session not found")
+		return "", fmt.Errorf("token not found in context")
 	}
+	value, ok := token.(string)
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("token not found in context")
+	}
+	return value, nil
+}
 
-	sessionMap, ok := sessionData.(map[string]interface{})
-	if !ok {
+// GetSession 从 gin 上下文中获取当前会话数据
+func (a *Auth) GetSession(c *gin.Context) (*SessionData, error) {
+	if c == nil {
+		return nil, fmt.Errorf("context is nil")
+	}
+	session, exists := c.Get("auth.session")
+	if !exists {
+		return nil, fmt.Errorf("session not found in context")
+	}
+	value, ok := session.(*SessionData)
+	if !ok || value == nil {
 		return nil, fmt.Errorf("invalid session data")
 	}
-
-	return sessionMap, nil
+	return value, nil
 }

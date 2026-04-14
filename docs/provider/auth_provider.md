@@ -1,514 +1,305 @@
 # 认证提供者 (Auth Provider)
 
-认证提供者为应用程序提供完整的身份认证和授权管理功能，支持多种认证方式、多租户架构和灵活的权限控制。
+`auth_provider` 提供统一的认证能力，当前支持两种底层模式：
+
+- `session`: 服务端会话认证。登录后返回稳定的随机 token，会话数据存储在 Redis 或内存中，支持滑动续期。
+- `token`: 固定令牌认证。适合内部服务、Webhook 或简单的系统间调用。
+
+当前实现已经不再使用 JWT 登录态，也不需要 refresh token 机制。
 
 ## 功能特性
 
-- **多认证方式**: 支持JWT和固定Token两种认证方式
-- **多租户支持**: 支持多Guard配置，实现多租户隔离
-- **灵活缓存**: 支持Redis和内存两种缓存方式
-- **单点登录**: 可选的SSO功能，控制用户并发登录
-- **路由保护**: 自动保护API路由，支持匿名访问配置
-- **会话管理**: 完整的用户会话生命周期管理
-- **友好错误**: 结构化的错误响应和用户友好的错误消息
-- **泛型支持**: 类型安全的用户数据获取
+- 多 Guard 配置，支持不同路由前缀隔离
+- 服务端 session 存储
+- HTTP 中间件自动认证
+- WebSocket 握手认证与消息活跃续期
+- `touch_interval` 控制的滑动会话续期
+- 可选单设备登录
+- 统一错误类型与上下文访问
 
-## 快速开始
+## 配置说明
 
-### 1. 配置文件
-
-在 `config.yaml` 中添加认证配置：
+### Guard 配置
 
 ```yaml
-config:
-  auth:
-    guards:
-      api:                                    # Guard名称
-        type: "jwt"                          # 认证类型: jwt | token
-        prefix: "/api"                       # 路由前缀
-        anonymity:                           # 匿名路由列表
-          - "/api/login"
-          - "/api/register"
-          - "/api/health"
-        cache: "redis"                       # 缓存类型: redis | memory
-        sso_enabled: true                    # 单点登录开关
-      admin:
-        type: "token"
-        token: "admin-secret-token-2024"     # 固定Token
-        prefix: "/admin"
-        anonymity:
-          - "/admin/login"
-        cache: "memory"
-        sso_enabled: false
+auth:
+  guards:
+    api:
+      type: session                    # session | token
+      token: ""                        # type=token 时使用
+      prefix: /api
+      anonymity:
+        - /api/login
+        - /api/health
+      cache: redis                     # redis | memory
+      duration: 259200                 # 会话空闲超时，单位秒
+      touch_interval: 300              # 最小续期间隔，单位秒
+      single_session_enabled: false    # true 时新登录会踢掉旧会话
+
+    internal:
+      type: token
+      token: internal-service-token
+      prefix: /internal
+      anonymity: []
+      cache: memory
 ```
 
-### 2. 基础使用
+### 字段含义
+
+- `type`: 认证模式，支持 `session` 或 `token`
+- `token`: 固定 token 模式使用的令牌
+- `prefix`: 路由前缀，用于自动匹配 guard
+- `anonymity`: 匿名路由列表，匹配到后跳过认证
+- `cache`: 认证数据存储位置，支持 `redis` 和 `memory`
+- `duration`: 会话空闲超时时间。超过该时长无活跃操作，会话失效
+- `touch_interval`: 最小续期间隔。只有距离上次续期超过该值时，才会执行一次续期写入
+- `single_session_enabled`: 是否只允许用户保留一个有效会话
+
+## 工作方式
+
+### Session 模式
+
+1. 调用 `Login` 生成随机 token
+2. token 对应的 session 数据写入 Redis 或内存
+3. HTTP 请求通过认证中间件时自动校验 token
+4. 若距离上次续期超过 `touch_interval`，自动延长 session TTL
+5. WebSocket 握手时完成认证，收到消息时按 `touch_interval` 续期
+6. 调用 `Logout` 删除当前 token 对应的 session
+
+### Token 模式
+
+1. 请求携带固定 token
+2. 服务端直接比对配置中的 `token`
+3. 不走登录态签发，也不做会话续期
+
+## 在 fx 中注册
 
 ```go
 package main
 
 import (
-    "log"
-    "net/http"
-    
-    "github.com/gin-gonic/gin"
-    "github.com/icreateapp-com/go-zLib/z"
-    "github.com/icreateapp-com/go-zLib/z/provider/auth_provider"
+    "github.com/icreateapp-com/go-zLib/z/providers/auth_provider"
+    "go.uber.org/fx"
 )
 
 func main() {
-    // 注册认证提供者
-    auth_provider.AuthProvider.Register()
-    
-    r := gin.Default()
-    
-    // 添加认证中间件
-    r.Use(auth_provider.AuthProvider.HttpAuthProviderMiddleware())
-    
-    // 登录接口
-    r.POST("/api/login", loginHandler)
-    
-    // 受保护的接口
-    r.GET("/api/profile", profileHandler)
-    r.POST("/api/logout", logoutHandler)
-    
-    r.Run(":8080")
-}
+    app := fx.New(
+        auth_provider.AuthProviderModule,
+    )
 
-// 用户登录
-func loginHandler(c *gin.Context) {
-    // 验证用户凭据
-    userID := "user123"
-    userData := map[string]interface{}{
-        "name":  "张三",
-        "email": "zhangsan@example.com",
-        "role":  "user",
-    }
-    
-    // 生成认证令牌
-    token, err := auth_provider.AuthProvider.Login("api", userID, userData)
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{
-            "error": "login failed",
-            "message": err.Error(),
-        })
-        return
-    }
-    
-    c.JSON(http.StatusOK, gin.H{
-        "token": token,
-        "user": userData,
-    })
-}
-
-// 获取用户信息
-func profileHandler(c *gin.Context) {
-    // 获取当前用户ID
-    userID, err := auth_provider.AuthProvider.GetUserID("api")
-    if err != nil {
-        c.JSON(http.StatusUnauthorized, gin.H{
-            "error": "unauthorized",
-            "message": err.Error(),
-        })
-        return
-    }
-    
-    // 获取用户数据（泛型方式）
-    type UserProfile struct {
-        Name  string `json:"name"`
-        Email string `json:"email"`
-        Role  string `json:"role"`
-    }
-    
-    profile, err := auth_provider.AuthProvider.GetData[UserProfile]("api")
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{
-            "error": "data_error",
-            "message": err.Error(),
-        })
-        return
-    }
-    
-    c.JSON(http.StatusOK, gin.H{
-        "user_id": userID,
-        "profile": profile,
-    })
-}
-
-// 用户登出
-func logoutHandler(c *gin.Context) {
-    // 登出当前用户
-    err := auth_provider.AuthProvider.Logout("api", "")
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{
-            "error": "logout_failed",
-            "message": err.Error(),
-        })
-        return
-    }
-    
-    c.JSON(http.StatusOK, gin.H{
-        "message": "logout successful",
-    })
+    app.Run()
 }
 ```
 
-## API 参考
+## 登录与登出
 
-### AuthProvider
+### Login
 
-#### Register()
-
-注册认证提供者，初始化所有Guard配置。
+签名：
 
 ```go
-auth_provider.AuthProvider.Register()
+func (a *Auth) Login(guard string, userID string, duration time.Duration, data ...interface{}) (string, error)
 ```
 
-#### Login(guard, userID, device string, duration time.Duration, data ...interface{}) (string, error)
+说明：
 
-用户登录，生成认证令牌。
+- `guard`: guard 名称
+- `userID`: 当前登录用户 ID
+- `duration`: 本次登录的会话空闲超时时间。传 `<= 0` 时回退到配置中的 `duration`
+- `data`: 可选的自定义用户数据，会存入 session
+
+示例：
 
 ```go
-// 登录到默认设备
-token, err := auth_provider.AuthProvider.Login("api", "user123", "", time.Hour*24, map[string]interface{}{
-    "name": "张三",
-    "role": "admin",
-})
-
-// 登录到指定设备
-token, err := auth_provider.AuthProvider.Login("api", "user123", "mobile-app", time.Hour*24, map[string]interface{}{
+token, err := auth.Login("api", "user123", 24*time.Hour, map[string]interface{}{
     "name": "张三",
     "role": "admin",
 })
 ```
 
-#### Logout
+### Logout
 
-登出指定设备。
-
-```go
-func Logout(guard, device string, userID ...string) error
-```
-
-**参数：**
-- `guard`: 守卫名称
-- `device`: 设备标识，为空时表示默认设备
-- `userID`: 用户ID（可选），为空时表示当前用户
-
-**示例：**
-```go
-// 登出当前用户的默认设备
-err := auth_provider.Logout("api", "")
-
-// 登出当前用户的指定设备
-err := auth_provider.Logout("api", "mobile-app")
-
-// 登出指定用户的默认设备
-err := auth_provider.Logout("api", "", "user123")
-
-// 登出指定用户的指定设备
-err := auth_provider.Logout("api", "mobile-app", "user123")
-```
-
-#### LogoutAll
-
-登出用户的所有设备。
+签名：
 
 ```go
-func LogoutAll(guard string, userID ...string) error
+func (a *Auth) Logout(guard, token string) error
 ```
 
-**参数：**
-- `guard`: 守卫名称
-- `userID`: 用户ID（可选），为空时表示当前用户
+说明：
 
-**示例：**
-```go
-// 登出当前用户的所有设备
-err := auth_provider.LogoutAll("api")
+- 按当前 token 登出当前会话
+- 支持自动剥离 `Bearer ` 前缀
 
-// 登出指定用户的所有设备
-err := auth_provider.LogoutAll("api", "user123")
-```
-
-#### GetUserID(guard string) (string, error)
-
-获取当前认证用户的ID。
+示例：
 
 ```go
-userID, err := auth_provider.AuthProvider.GetUserID("api")
+err := auth.Logout("api", c.GetHeader("Authorization"))
 ```
 
-#### GetData[T any](guard string) (T, error)
+### LogoutAll
 
-获取当前用户的数据（泛型方式）。
+签名：
 
 ```go
-type UserInfo struct {
-    Name  string `json:"name"`
-    Email string `json:"email"`
-}
-
-userInfo, err := auth_provider.AuthProvider.GetData[UserInfo]("api")
+func (a *Auth) LogoutAll(guard, userID string) error
 ```
 
-#### Authenticate(guard, token string) (*AuthContext, error)
-
-验证认证令牌。
+示例：
 
 ```go
-ctx, err := auth_provider.AuthProvider.Authenticate("api", "jwt-token")
+err := auth.LogoutAll("api", "user123")
 ```
 
-### 设备管理API
+## HTTP 认证
 
-#### GetCurrentDevice(guard string) (string, error)
-
-获取当前设备标识。
+### 中间件入口
 
 ```go
-device, err := auth_provider.AuthProvider.GetCurrentDevice("api")
+func (a *Auth) Authenticate(c *gin.Context) (bool, string, error)
 ```
 
-#### GetUserDevices(guard, userID string) ([]string, error)
+典型行为：
 
-获取用户的所有设备列表。
+- 从 `Authorization` 头读取 token
+- 若为空，再读取 `?token=...`
+- 根据当前路由所属的 guard 进行校验
+- 成功后将认证结果写入 gin context
+
+写入的上下文键：
+
+- `auth.guard`
+- `auth.user_id`
+- `auth.token`
+- `auth.session`
+- `auth.data`
+
+### Gin 中使用
 
 ```go
-devices, err := auth_provider.AuthProvider.GetUserDevices("api", "user123")
-```
-
-#### IsDeviceOnline(guard, userID, device string) (bool, error)
-
-检查指定设备是否在线（有有效会话）。
-
-```go
-online, err := auth_provider.AuthProvider.IsDeviceOnline("api", "user123", "mobile-app")
-```
-
-#### GetDeviceInfo(guard, userID, device string) (map[string]interface{}, error)
-
-获取设备的详细信息。
-
-```go
-info, err := auth_provider.AuthProvider.GetDeviceInfo("api", "user123", "mobile-app")
-```
-
-#### HttpAuthProviderMiddleware() gin.HandlerFunc
-
-返回Gin认证中间件。
-
-```go
-r.Use(auth_provider.AuthProvider.HttpAuthProviderMiddleware())
-```
-
-## 令牌获取方式
-
-认证中间件支持多种方式获取访问令牌，按优先级顺序：
-
-### 1. Authorization Header（推荐）
-
-标准的HTTP认证方式，支持Bearer令牌格式：
-
-```bash
-# 带Bearer前缀
-curl -H "Authorization: Bearer your-jwt-token" http://localhost:8080/api/profile
-
-# 不带Bearer前缀（自动识别）
-curl -H "Authorization: your-jwt-token" http://localhost:8080/api/profile
-```
-
-### 2. URL参数
-
-当无法设置HTTP头部时（如WebSocket连接、某些客户端限制），可以通过URL参数传递令牌：
-
-```bash
-# 通过token参数传递
-curl "http://localhost:8080/api/profile?token=your-jwt-token"
-
-# WebSocket连接示例
-ws://localhost:8080/ws?token=your-jwt-token
-```
-
-**注意事项：**
-- URL参数方式可能在日志中暴露令牌，生产环境建议优先使用Authorization Header
-- 两种方式同时存在时，优先使用Authorization Header
-- 令牌格式和验证规则完全相同
-
-## 中间件集成
-
-### Gin 中间件
-
-认证中间件会自动处理所有HTTP请求的认证：
-
-```go
-package main
-
-import (
-    "github.com/gin-gonic/gin"
-    "github.com/icreateapp-com/go-zLib/z/provider/auth_provider"
-)
-
-func main() {
-    r := gin.Default()
-    
-    // 添加认证中间件
-    r.Use(auth_provider.AuthProvider.HttpAuthProviderMiddleware())
-    
-    // 中间件会自动：
-    // 1. 根据路由前缀匹配对应的Guard
-    // 2. 检查是否为匿名路由
-    // 3. 从多种来源提取和验证认证令牌（Authorization Header 或 URL参数）
-    // 4. 设置认证上下文
-    // 5. 返回友好的错误响应
-    
-    r.GET("/api/protected", func(c *gin.Context) {
-        // 此时用户已通过认证
-        userID, _ := auth_provider.AuthProvider.GetUserID("api")
-        c.JSON(200, gin.H{"user_id": userID})
-    })
-    
-    r.Run(":8080")
-}
-```
-
-### 自定义认证检查
-
-```go
-func requireAuth(guard string) gin.HandlerFunc {
+func ProtectedHandler(auth *auth_provider.Auth) gin.HandlerFunc {
     return func(c *gin.Context) {
-        token := c.GetHeader("Authorization")
-        if token == "" {
-            c.JSON(401, gin.H{"error": "token required"})
+        ok, _, err := auth.Authenticate(c)
+        if !ok || err != nil {
+            c.JSON(401, gin.H{"error": err.Error()})
             c.Abort()
             return
         }
-        
-        // 移除 "Bearer " 前缀
-        if len(token) > 7 && token[:7] == "Bearer " {
-            token = token[7:]
-        }
-        
-        ctx, err := auth_provider.AuthProvider.Authenticate(guard, token)
+
+        userID, err := auth.GetUserID(c)
         if err != nil {
             c.JSON(401, gin.H{"error": err.Error()})
             c.Abort()
             return
         }
-        
-        // 设置用户上下文
-        c.Set("auth_context", ctx)
-        c.Next()
+
+        c.JSON(200, gin.H{"user_id": userID})
     }
 }
 ```
 
-## 认证方式
+## WebSocket 认证
 
-### JWT 认证
+WebSocket 服务默认支持两类行为：
 
-JWT认证支持动态令牌生成和验证：
+- 握手时读取 `Authorization` 头或 `?token=...`
+- 握手认证成功后，消息到达时按 `touch_interval` 触发 session 续期
 
-```go
-// 配置
-guards:
-  api:
-    type: "jwt"
-    prefix: "/api"
-    cache: "redis"
-    sso_enabled: true
+示例：
 
-// 使用
-token, err := auth_provider.AuthProvider.Login("api", "user123", userData)
-// 生成的token格式: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```text
+ws://localhost:8080/ws?guard=api&token=your-session-token
 ```
 
-**JWT特性：**
-- 自包含的用户信息
-- 支持过期时间控制
-- 无状态验证
-- 支持分布式部署
+注意：
 
-### 固定Token认证
+- 如果连接长时间保持，但完全没有消息收发，不会自动续期
+- 如果续期时发现 session 已失效，连接会被关闭
 
-固定Token认证使用预设的令牌：
+## 认证结果读取
 
-```go
-// 配置
-guards:
-  admin:
-    type: "token"
-    token: "admin-secret-token-2024"
-    prefix: "/admin"
-    cache: "memory"
-
-// 使用
-token, err := auth_provider.AuthProvider.Login("admin", "admin001", adminData)
-// 返回的token就是配置中的固定token
-```
-
-**固定Token特性：**
-- 简单可靠
-- 适合内部系统
-- 易于管理和轮换
-- 高性能验证
-
-## 缓存策略
-
-### Redis 缓存
-
-适合分布式部署和高并发场景：
+### GetUserID
 
 ```go
-guards:
-  api:
-    cache: "redis"
+userID, err := auth.GetUserID(c)
 ```
 
-**特性：**
-- 支持集群部署
-- 数据持久化
-- 高性能访问
-- 支持TTL过期
-
-### 内存缓存
-
-适合单机部署和快速访问：
+### GetData
 
 ```go
-guards:
-  admin:
-    cache: "memory"
+data, err := auth.GetData(c)
 ```
 
-**特性：**
-- 极高性能
-- 零网络延迟
-- 简单部署
-- 进程重启数据丢失
-
-## 单点登录 (SSO)
-
-启用SSO后，用户在一个设备登录会自动登出其他设备：
+### GetToken
 
 ```go
-guards:
-  api:
-    sso_enabled: true  # 启用SSO
+token, err := auth.GetToken(c)
 ```
 
-**工作原理：**
-1. 用户登录时检查是否已有活跃会话
-2. 如果有，则清除之前的会话
-3. 创建新的会话令牌
-4. 旧令牌立即失效
+### GetSession
+
+```go
+session, err := auth.GetSession(c)
+```
+
+`SessionData` 结构：
+
+```go
+type SessionData struct {
+    TokenHash  string
+    UserID     string
+    GuardName  string
+    LoginTime  int64
+    LastSeenAt int64
+    ExpiresAt  int64
+    Data       interface{}
+}
+```
+
+## 令牌获取方式
+
+### Authorization Header
+
+推荐方式：
+
+```bash
+curl -H "Authorization: Bearer your-session-token" http://localhost:8080/api/profile
+```
+
+也支持不带 `Bearer` 前缀：
+
+```bash
+curl -H "Authorization: your-session-token" http://localhost:8080/api/profile
+```
+
+### URL 参数
+
+适合 WebSocket 或受限客户端：
+
+```bash
+curl "http://localhost:8080/api/profile?token=your-session-token"
+ws://localhost:8080/ws?guard=api&token=your-session-token
+```
+
+## 单设备登录
+
+配置：
+
+```yaml
+auth:
+  guards:
+    api:
+      type: session
+      single_session_enabled: true
+```
+
+行为：
+
+- 新会话登录时，会清理该用户旧的所有 session
+- 旧 token 随即失效
 
 ## 错误处理
 
-### 错误类型
-
-认证系统提供结构化的错误响应：
+错误类型：
 
 ```go
 type AuthError struct {
@@ -517,440 +308,101 @@ type AuthError struct {
 }
 ```
 
-### 预定义错误
+常见错误：
 
 | 错误代码 | 错误消息 | 说明 |
 |---------|---------|------|
-| TOKEN_MISSING | token required | 缺少认证令牌 |
-| TOKEN_INVALID | invalid token | 令牌无效 |
-| TOKEN_EXPIRED | token expired | 令牌已过期 |
-| TOKEN_MALFORMED | malformed token | 令牌格式错误 |
-| TOKEN_SIGNATURE | invalid signature | 签名无效 |
-| SESSION_NOT_FOUND | session expired | 会话已过期 |
-| SESSION_INVALID | invalid session | 会话数据无效 |
-| GUARD_NOT_FOUND | guard not found | Guard不存在 |
-| GUARD_MISMATCH | token mismatch | 令牌不匹配 |
-| AUTH_TYPE_UNSUPPORTED | unsupported auth type | 不支持的认证类型 |
-| PERMISSION_DENIED | access denied | 权限不足 |
+| `TOKEN_MISSING` | `token required` | 缺少 token |
+| `TOKEN_INVALID` | `invalid token` | token 无效 |
+| `SESSION_EXPIRED` | `session expired` | session 已过期 |
+| `SESSION_NOT_FOUND` | `session expired` | session 不存在或已过期 |
+| `SESSION_INVALID` | `invalid session` | session 数据损坏或无效 |
+| `GUARD_NOT_FOUND` | `guard not found` | guard 不存在 |
+| `AUTH_TYPE_UNSUPPORTED` | `unsupported auth type` | 不支持的认证类型 |
+| `PERMISSION_DENIED` | `access denied` | 无权限访问 |
 
-### 错误响应格式
+统一返回示例：
 
 ```json
 {
-  "error": "TOKEN_EXPIRED",
-  "message": "token expired"
-}
-```
-
-## 高级用法
-
-### 多租户架构
-
-```go
-// 为不同的客户端配置不同的Guard
-guards:
-  customer_a:
-    type: "jwt"
-    prefix: "/customer-a"
-    cache: "redis"
-  customer_b:
-    type: "jwt"
-    prefix: "/customer-b"
-    cache: "redis"
-  internal:
-    type: "token"
-    token: "internal-service-token"
-    prefix: "/internal"
-    cache: "memory"
-```
-
-### 权限控制
-
-```go
-func requireRole(role string) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        userID, err := auth_provider.AuthProvider.GetUserID("api")
-        if err != nil {
-            c.JSON(401, gin.H{"error": "unauthorized"})
-            c.Abort()
-            return
-        }
-        
-        // 获取用户数据
-        type UserData struct {
-            Role string `json:"role"`
-        }
-        
-        userData, err := auth_provider.AuthProvider.GetData[UserData]("api")
-        if err != nil || userData.Role != role {
-            c.JSON(403, gin.H{"error": "access denied"})
-            c.Abort()
-            return
-        }
-        
-        c.Next()
-    }
-}
-
-// 使用
-r.GET("/admin/users", requireRole("admin"), adminUsersHandler)
-```
-
-### 令牌刷新
-
-```go
-func refreshTokenHandler(c *gin.Context) {
-    // 获取当前用户信息
-    userID, err := auth_provider.AuthProvider.GetUserID("api")
-    if err != nil {
-        c.JSON(401, gin.H{"error": "unauthorized"})
-        return
-    }
-    
-    userData, err := auth_provider.AuthProvider.GetData[map[string]interface{}]("api")
-    if err != nil {
-        c.JSON(500, gin.H{"error": "data error"})
-        return
-    }
-    
-    // 重新登录生成新令牌
-    newToken, err := auth_provider.AuthProvider.Login("api", userID, userData)
-    if err != nil {
-        c.JSON(500, gin.H{"error": "refresh failed"})
-        return
-    }
-    
-    c.JSON(200, gin.H{"token": newToken})
-}
-```
-
-### 批量登出
-
-```go
-func logoutAllUsersHandler(c *gin.Context) {
-    // 管理员功能：登出所有用户
-    userIDs := []string{"user1", "user2", "user3"}
-    
-    var errors []string
-    for _, userID := range userIDs {
-        if err := auth_provider.AuthProvider.Logout("api", "", userID); err != nil {
-            errors = append(errors, fmt.Sprintf("用户 %s 登出失败: %v", userID, err))
-        }
-    }
-    
-    if len(errors) > 0 {
-        c.JSON(500, gin.H{
-            "message": "部分用户登出失败",
-            "errors": errors,
-        })
-        return
-    }
-    
-    c.JSON(200, gin.H{"message": "所有用户已登出"})
+  "error": "SESSION_NOT_FOUND",
+  "message": "session expired"
 }
 ```
 
 ## 最佳实践
 
-### 1. 安全配置
+### 1. 用户登录态使用 session
 
 ```yaml
-# 生产环境建议
-guards:
-  api:
-    type: "jwt"
-    cache: "redis"           # 使用Redis缓存
-    sso_enabled: true        # 启用SSO防止令牌滥用
-    anonymity:               # 最小化匿名路由
-      - "/api/login"
-      - "/api/health"
+auth:
+  guards:
+    admin:
+      type: session
+      cache: redis
+      duration: 259200
+      touch_interval: 300
 ```
 
-### 2. 错误处理
+适合后台、控制台、普通用户登录态。
 
-```go
-// 统一错误处理
-func handleAuthError(c *gin.Context, err error) {
-    if authErr, ok := err.(*auth_provider.AuthError); ok {
-        c.JSON(401, gin.H{
-            "error": authErr.Code,
-            "message": authErr.Message,
-        })
-    } else {
-        c.JSON(500, gin.H{
-            "error": "INTERNAL_ERROR",
-            "message": "internal server error",
-        })
-    }
-}
+### 2. 内部服务调用使用固定 token
+
+```yaml
+auth:
+  guards:
+    internal:
+      type: token
+      token: internal-service-token
+      cache: memory
 ```
 
-### 3. 性能优化
+适合内网服务、Webhook、管理接口。
 
-```go
-// 缓存用户数据减少数据库查询
-func getUserProfile(userID string) (*UserProfile, error) {
-    // 先从缓存获取
-    if cached := getUserFromCache(userID); cached != nil {
-        return cached, nil
-    }
-    
-    // 从数据库获取
-    profile, err := getUserFromDB(userID)
-    if err != nil {
-        return nil, err
-    }
-    
-    // 缓存结果
-    cacheUser(userID, profile)
-    return profile, nil
-}
-```
+### 3. `touch_interval` 不要太小
 
-### 4. 监控和日志
+建议：
 
-```go
-// 认证事件记录
-func logAuthEvent(event string, userID string, guard string) {
-    log.Printf("[AUTH] %s - User: %s, Guard: %s", event, userID, guard)
-}
+- 高频 API / WebSocket 场景：`300` 秒左右
+- 安全要求更高时，可按业务缩短
 
-// 在登录/登出时调用
-logAuthEvent("LOGIN", userID, guard)
-logAuthEvent("LOGOUT", userID, guard)
-```
+过小会导致 Redis 写入频率过高，失去节流意义。
 
-## 故障排除
+### 4. 前端不要依赖固定过期时间强退
 
-### 常见问题
+session 模式是滑动续期：
 
-1. **令牌验证失败**
-   - 检查JWT密钥配置
-   - 确认令牌格式正确
-   - 验证令牌是否过期
+- 只要近期有操作，会话就会继续延长
+- 前端应以服务端返回的 401 为准，而不是只看首次登录返回的过期时间
 
-2. **缓存连接失败**
-   - 检查Redis连接配置
-   - 确认网络连通性
-   - 验证认证信息
+## 故障排查
 
-3. **路由匹配问题**
-   - 检查prefix配置
-   - 确认匿名路由设置
-   - 验证中间件顺序
+### 登录后很快掉线
 
-4. **SSO不生效**
-   - 确认sso_enabled配置
-   - 检查缓存是否正常工作
-   - 验证用户ID唯一性
+检查：
 
-### 调试技巧
+- `duration` 是否配置过小
+- 前端是否仍在按固定 `expires_at` 本地强退
+- Redis TTL 是否正常写入
 
-```go
-// 启用调试模式
-func debugAuth() {
-    // 打印当前认证上下文
-    userID, _ := auth_provider.AuthProvider.GetUserID("api")
-    fmt.Printf("当前用户: %s\n", userID)
-    
-    // 打印用户数据
-    data, _ := auth_provider.AuthProvider.GetData[map[string]interface{}]("api")
-    fmt.Printf("用户数据: %+v\n", data)
-}
-```
+### 活跃用户仍被踢下线
 
-## 设备认证使用示例
+检查：
 
-### 多设备登录管理
+- `touch_interval` 是否过大
+- 请求是否真的经过 HTTP 中间件
+- WebSocket 是否存在长连接但没有任何消息
 
-```go
-package main
+### 单设备登录不生效
 
-import (
-    "time"
-    "github.com/gin-gonic/gin"
-    "github.com/icreateapp-com/go-zLib/z/provider/auth_provider"
-)
+检查：
 
-func main() {
-    r := gin.Default()
-    r.Use(auth_provider.AuthProvider.HttpAuthProviderMiddleware())
-    
-    // 登录接口 - 支持设备参数
-    r.POST("/api/login", func(c *gin.Context) {
-        var req struct {
-            UserID   string `json:"user_id"`
-            Device   string `json:"device"`   // 设备标识
-            Password string `json:"password"`
-        }
-        
-        if err := c.ShouldBindJSON(&req); err != nil {
-            c.JSON(400, gin.H{"error": err.Error()})
-            return
-        }
-        
-        // 验证密码（省略实际验证逻辑）
-        
-        // 登录并指定设备
-        token, err := auth_provider.Login("api", req.UserID, req.Device, time.Hour*24, map[string]interface{}{
-            "name": "用户名",
-            "role": "user",
-        })
-        
-        if err != nil {
-            c.JSON(500, gin.H{"error": err.Error()})
-            return
-        }
-        
-        c.JSON(200, gin.H{
-            "token":  token,
-            "device": req.Device,
-        })
-    })
-    
-    // 获取当前设备信息
-    r.GET("/api/current-device", func(c *gin.Context) {
-        device, err := auth_provider.GetCurrentDevice("api")
-        if err != nil {
-            c.JSON(401, gin.H{"error": err.Error()})
-            return
-        }
-        
-        c.JSON(200, gin.H{"device": device})
-    })
-    
-    // 获取用户所有设备
-    r.GET("/api/user/:userID/devices", func(c *gin.Context) {
-        userID := c.Param("userID")
-        
-        devices, err := auth_provider.GetUserDevices("api", userID)
-        if err != nil {
-            c.JSON(500, gin.H{"error": err.Error()})
-            return
-        }
-        
-        c.JSON(200, gin.H{"devices": devices})
-    })
-    
-    // 检查设备状态
-    r.GET("/api/user/:userID/device/:device/status", func(c *gin.Context) {
-        userID := c.Param("userID")
-        device := c.Param("device")
-        
-        online, err := auth_provider.IsDeviceOnline("api", userID, device)
-        if err != nil {
-            c.JSON(500, gin.H{"error": err.Error()})
-            return
-        }
-        
-        c.JSON(200, gin.H{
-            "device": device,
-            "online": online,
-        })
-    })
-    
-    // 登出指定设备
-    r.POST("/api/logout", func(c *gin.Context) {
-        var req struct {
-            UserID string `json:"user_id"`
-            Device string `json:"device"`
-        }
-        
-        if err := c.ShouldBindJSON(&req); err != nil {
-            c.JSON(400, gin.H{"error": err.Error()})
-            return
-        }
-        
-        err := auth_provider.Logout("api", req.Device, req.UserID)
-        if err != nil {
-            c.JSON(500, gin.H{"error": err.Error()})
-            return
-        }
-        
-        c.JSON(200, gin.H{"message": "设备已登出"})
-    })
-    
-    // 登出所有设备
-    r.POST("/api/logout-all", func(c *gin.Context) {
-        var req struct {
-            UserID string `json:"user_id"`
-        }
-        
-        if err := c.ShouldBindJSON(&req); err != nil {
-            c.JSON(400, gin.H{"error": err.Error()})
-            return
-        }
-        
-        err := auth_provider.LogoutAll("api", req.UserID)
-        if err != nil {
-            c.JSON(500, gin.H{"error": err.Error()})
-            return
-        }
-        
-        c.JSON(200, gin.H{"message": "所有设备已登出"})
-    })
-    
-    r.Run(":8080")
-}
-```
+- `single_session_enabled` 是否为 `true`
+- 是否多个 guard 混用导致登录态不在同一个 guard 下
 
-### 设备标识建议
+### 固定 token 调用失败
 
-```go
-// 设备类型标识
-const (
-    DeviceWebBrowser  = "web-browser"
-    DeviceMobileApp   = "mobile-app"
-    DeviceDesktopApp  = "desktop-app"
-    DeviceTablet      = "tablet"
-)
+检查：
 
-// 更具体的设备标识
-func generateDeviceID(deviceType, platform, version string) string {
-    return fmt.Sprintf("%s-%s-%s", deviceType, platform, version)
-}
-
-// 示例
-deviceID := generateDeviceID("web", "chrome", "120")
-// 结果: "web-chrome-120"
-```
-
-### 前端集成示例
-
-```javascript
-// 登录时指定设备
-fetch('/api/login', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    user_id: 'user123',
-    device: 'web-browser',  // 或 'mobile-app', 'desktop-app' 等
-    password: 'password123'
-  })
-})
-
-// 获取用户所有设备
-fetch('/api/user/user123/devices')
-
-// 检查设备状态
-fetch('/api/user/user123/device/mobile-app/status')
-
-// 登出指定设备
-fetch('/api/logout', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    user_id: 'user123',
-    device: 'mobile-app'
-  })
-})
-
-// 登出所有设备
-fetch('/api/logout-all', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    user_id: 'user123'
-  })
-})
-```
+- `type` 是否配置为 `token`
+- 请求头中的 token 是否与配置值完全一致

@@ -1,15 +1,11 @@
 package auth_provider
 
-import (
-	"strings"
-
-	"github.com/golang-jwt/jwt/v5"
-)
+import "strings"
 
 // 认证类型常量
 const (
-	AuthTypeJWT   = "jwt"   // JWT认证类型
-	AuthTypeToken = "token" // 固定Token认证类型
+	AuthTypeSession = "session" // 服务端会话认证类型
+	AuthTypeToken   = "token"   // 固定Token认证类型
 )
 
 // 缓存类型常量
@@ -20,27 +16,34 @@ const (
 
 // GuardConfig guard配置结构
 type GuardConfig struct {
-	Type                string   `json:"type"`                  // jwt | token
-	Token               string   `json:"token"`                 // 固定令牌
-	Prefix              string   `json:"prefix"`                // 路由前缀
-	Anonymity           []string `json:"anonymity"`             // 匿名路由列表
-	Cache               string   `json:"cache"`                 // memory | redis
-	SingleDeviceEnabled bool     `json:"single_device_enabled"` // 单设备登录开关（默认 false）
+	Type                 string   `json:"type"`                   // session | token
+	Token                string   `json:"token"`                  // 固定令牌
+	Prefix               string   `json:"prefix"`                 // 路由前缀
+	Anonymity            []string `json:"anonymity"`              // 匿名路由列表
+	Cache                string   `json:"cache"`                  // memory | redis
+	Duration             int      `json:"duration"`               // 会话空闲超时时间（秒）
+	TouchInterval        int      `json:"touch_interval"`         // 最小续期间隔（秒）
+	SingleSessionEnabled bool     `json:"single_session_enabled"` // 单会话登录开关（默认 false）
 }
 
 // AuthContext 认证上下文结构
 type AuthContext struct {
-	GuardName string                 `json:"guard_name"` // 当前guard名称
-	UserID    string                 `json:"user_id"`    // 用户ID
-	Device    string                 `json:"device"`     // 设备标识
-	Data      map[string]interface{} `json:"data"`       // 自定义数据
+	GuardName string       `json:"guard_name"` // 当前guard名称
+	UserID    string       `json:"user_id"`    // 用户ID
+	Token     string       `json:"token"`      // 当前会话令牌
+	Session   *SessionData `json:"session"`    // 当前会话数据
+	Data      interface{}  `json:"data"`       // 自定义数据
 }
 
-// MultiTenantClaims 多租户JWT声明结构
-type MultiTenantClaims struct {
-	UserID    string `json:"user_id"`
-	GuardName string `json:"guard_name"` // guard名称
-	jwt.RegisteredClaims
+// SessionData 服务端会话数据
+type SessionData struct {
+	TokenHash  string      `json:"token_hash"`
+	UserID     string      `json:"user_id"`
+	GuardName  string      `json:"guard_name"`
+	LoginTime  int64       `json:"login_time"`
+	LastSeenAt int64       `json:"last_seen_at"`
+	ExpiresAt  int64       `json:"expires_at"`
+	Data       interface{} `json:"data,omitempty"`
 }
 
 // AuthError 认证错误类型
@@ -57,13 +60,10 @@ func (e *AuthError) Error() string {
 var (
 	ErrTokenMissing        = &AuthError{Code: "TOKEN_MISSING", Message: "token required"}
 	ErrTokenInvalid        = &AuthError{Code: "TOKEN_INVALID", Message: "invalid token"}
-	ErrTokenExpired        = &AuthError{Code: "TOKEN_EXPIRED", Message: "token expired"}
-	ErrTokenMalformed      = &AuthError{Code: "TOKEN_MALFORMED", Message: "malformed token"}
-	ErrTokenSignature      = &AuthError{Code: "TOKEN_SIGNATURE", Message: "invalid signature"}
+	ErrSessionExpired      = &AuthError{Code: "SESSION_EXPIRED", Message: "session expired"}
 	ErrSessionNotFound     = &AuthError{Code: "SESSION_NOT_FOUND", Message: "session expired"}
 	ErrSessionInvalid      = &AuthError{Code: "SESSION_INVALID", Message: "invalid session"}
 	ErrGuardNotFound       = &AuthError{Code: "GUARD_NOT_FOUND", Message: "guard not found"}
-	ErrGuardMismatch       = &AuthError{Code: "GUARD_MISMATCH", Message: "token mismatch"}
 	ErrAuthTypeUnsupported = &AuthError{Code: "AUTH_TYPE_UNSUPPORTED", Message: "unsupported auth type"}
 	ErrPermissionDenied    = &AuthError{Code: "PERMISSION_DENIED", Message: "access denied"}
 )
@@ -81,22 +81,6 @@ func convertToFriendlyError(err error) *AuthError {
 
 	errMsg := err.Error()
 
-	// JWT相关错误
-	if strings.Contains(errMsg, "token signature is invalid") ||
-		strings.Contains(errMsg, "signature is invalid") {
-		return ErrTokenSignature
-	}
-
-	if strings.Contains(errMsg, "token is expired") ||
-		strings.Contains(errMsg, "token has expired") {
-		return ErrTokenExpired
-	}
-
-	if strings.Contains(errMsg, "token is malformed") ||
-		strings.Contains(errMsg, "token contains an invalid number of segments") {
-		return ErrTokenMalformed
-	}
-
 	if strings.Contains(errMsg, "authorization header is missing") {
 		return ErrTokenMissing
 	}
@@ -111,12 +95,12 @@ func convertToFriendlyError(err error) *AuthError {
 		return ErrSessionNotFound
 	}
 
-	if strings.Contains(errMsg, "invalid session data") {
-		return ErrSessionInvalid
+	if strings.Contains(errMsg, "session expired") {
+		return ErrSessionExpired
 	}
 
-	if strings.Contains(errMsg, "token guard mismatch") {
-		return ErrGuardMismatch
+	if strings.Contains(errMsg, "invalid session data") {
+		return ErrSessionInvalid
 	}
 
 	if strings.Contains(errMsg, "unsupported authentication type") {
