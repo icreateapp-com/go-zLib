@@ -87,9 +87,18 @@ func NewMongoProvider(in MongoIn) (*MongoDB, error) {
 				return nil
 			}
 			if p.log != nil {
+				p.log.Infow("provider[mongodb_provider] stopping")
+			}
+			if err := p.client.Disconnect(ctx); err != nil {
+				if p.log != nil {
+					p.log.Errorw("provider[mongodb_provider] stop failed", "error", err)
+				}
+				return err
+			}
+			if p.log != nil {
 				p.log.Infow("provider[mongodb_provider] stopped")
 			}
-			return p.client.Disconnect(ctx)
+			return nil
 		},
 	})
 

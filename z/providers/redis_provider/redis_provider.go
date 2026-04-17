@@ -47,17 +47,22 @@ func NewRedisProvider(lc fx.Lifecycle, cfg *config_provider.Config, log *logger_
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
-			log.Infow("closing redis connection")
+			log.Infow("provider[redis] stopping")
 			err := client.Close()
 			if err == nil {
+				log.Infow("provider[redis] stopped")
 				return nil
 			}
 			errMsg := strings.ToLower(strings.TrimSpace(err.Error()))
 			if strings.Contains(errMsg, "bad connection") || strings.Contains(errMsg, "closed") {
 				if log != nil {
 					log.Debugw("redis connection close ignored", "error", err)
+					log.Infow("provider[redis] stopped")
 				}
 				return nil
+			}
+			if log != nil {
+				log.Errorw("provider[redis] stop failed", "error", err)
 			}
 			return err
 		},

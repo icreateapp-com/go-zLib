@@ -104,8 +104,13 @@ func RegisterHTTPServer(lc fx.Lifecycle, r *gin.Engine, cfg *config_provider.Con
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
-			log.Infow("stop http server", "addr", srv.Addr)
-			return srv.Shutdown(ctx)
+			log.Infow("stopping http server", "addr", srv.Addr)
+			if err := srv.Shutdown(ctx); err != nil {
+				log.Errorw("http server stop failed", "addr", srv.Addr, "error", err)
+				return err
+			}
+			log.Infow("http server stopped", "addr", srv.Addr)
+			return nil
 		},
 	})
 }

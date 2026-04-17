@@ -92,7 +92,13 @@ func NewTraceProvider(lc fx.Lifecycle, cfg *config_provider.Config, log *logger_
 			if tp.TracerProvider == nil {
 				return nil
 			}
-			return tp.TracerProvider.Shutdown(ctx)
+			log.Infow("provider[trace] stopping")
+			if err := tp.TracerProvider.Shutdown(ctx); err != nil {
+				log.Errorw("provider[trace] stop failed", "error", err)
+				return err
+			}
+			log.Infow("provider[trace] stopped")
+			return nil
 		},
 	})
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -125,7 +126,7 @@ func NewJobClient(in ClientIn) (*JobClient, error) {
 		client = asynq.NewClient(redisOpt)
 	}
 
-	queue := in.Cfg.GetString("job.queue", "default")
+	queue := resolveQueueName(in.Cfg)
 	maxRetries := in.Cfg.GetInt("job.max_retries", 3)
 	timeoutSeconds := in.Cfg.GetInt("job.timeout", 3600)
 	if timeoutSeconds <= 0 {
@@ -147,7 +148,7 @@ type WorkerIn struct {
 }
 
 func NewJobWorker(in WorkerIn) (*JobWorker, error) {
-	queue := in.Cfg.GetString("job.queue", "default")
+	queue := resolveQueueName(in.Cfg)
 	concurrency := in.Cfg.GetInt("job.concurrency", 10)
 	if concurrency <= 0 {
 		concurrency = 10
@@ -363,6 +364,54 @@ type HandlerOut struct {
 
 func Register(name string, handler JobHandler) HandlerOut {
 	return HandlerOut{Handler: JobHandlerRegister{Name: name, Handler: handler}}
+}
+
+// resolveQueueName 解析当前进程实际使用的队列名。
+// 优先使用显式配置的 job.queue_namespace；若未配置且处于 debug 模式，
+// 则使用主机名隔离本地开发进程，避免与共享 Redis 上的其他环境互抢任务。
+func resolveQueueName(cfg *config_provider.Config) string {
+	baseQueue := normalizeQueueSegment(cfg.GetString("job.queue", "default"))
+	if baseQueue == "" {
+		baseQueue = "default"
+	}
+
+	namespace := normalizeQueueSegment(cfg.GetString("job.queue_namespace"))
+	if namespace == "" && cfg.GetBool("app.debug", false) {
+		if hostname, err := os.Hostname(); err == nil {
+			namespace = normalizeQueueSegment(hostname)
+		}
+	}
+	if namespace == "" {
+		return baseQueue
+	}
+	return namespace + ":" + baseQueue
+}
+
+func normalizeQueueSegment(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(value))
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastDash = false
+		case r == '-', r == '_', r == '.':
+			builder.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				builder.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(builder.String(), "-")
 }
 
 var JobProviderModule = fx.Options(
