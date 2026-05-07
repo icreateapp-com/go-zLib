@@ -10,6 +10,7 @@ import (
 	"github.com/casbin/casbin/v2"
 	"github.com/casbin/casbin/v2/model"
 	"github.com/gin-gonic/gin"
+	"github.com/icreateapp-com/go-zLib/z"
 	"github.com/icreateapp-com/go-zLib/z/providers/config_provider"
 	"github.com/icreateapp-com/go-zLib/z/providers/logger_provider"
 	"github.com/icreateapp-com/go-zLib/z/providers/redis_provider"
@@ -121,28 +122,31 @@ func (p *Provider) RegisterCallback(cb Callback) {
 	}
 }
 
+// getCallback 安全读取当前注册的权限回调。
 func (p *Provider) getCallback() Callback {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.callback
 }
 
-func (p *Provider) cacheKey(tenantType, userID string) string {
-	return fmt.Sprintf("permission_%s_%s", tenantType, userID)
+// cacheKey 构建带 tenant 作用域的权限缓存键。
+func (p *Provider) cacheKey(tenantType, tenantID, userID string) string {
+	return fmt.Sprintf("permission_%s_%s_%s", tenantType, tenantID, userID)
 }
 
 // GetUserPermissions 获取用户权限（优先 Redis，miss 时回源并回填）
 func (p *Provider) GetUserPermissions(ctx context.Context, tenantType, tenantID, userID string) ([]Permission, error) {
 	tenantType = strings.TrimSpace(tenantType)
+	tenantID = strings.TrimSpace(tenantID)
 	userID = strings.TrimSpace(userID)
-	if tenantType == "" || userID == "" {
-		return nil, fmt.Errorf("invalid tenantType/userID")
+	if tenantType == "" || tenantID == "" || userID == "" {
+		return nil, fmt.Errorf("invalid tenantType/tenantID/userID")
 	}
 	if p.redis == nil {
 		return nil, fmt.Errorf("redis not enabled")
 	}
 
-	key := p.cacheKey(tenantType, userID)
+	key := p.cacheKey(tenantType, tenantID, userID)
 
 	// 1) 尝试从 redis 取
 	var cached []Permission
@@ -175,15 +179,16 @@ func (p *Provider) GetUserPermissions(ctx context.Context, tenantType, tenantID,
 // RefreshUserPermissions 刷新用户权限（供业务层主动调用）
 func (p *Provider) RefreshUserPermissions(ctx context.Context, tenantType, tenantID, userID string, permissions []Permission) error {
 	tenantType = strings.TrimSpace(tenantType)
+	tenantID = strings.TrimSpace(tenantID)
 	userID = strings.TrimSpace(userID)
-	if tenantType == "" || userID == "" {
-		return fmt.Errorf("invalid tenantType/userID")
+	if tenantType == "" || tenantID == "" || userID == "" {
+		return fmt.Errorf("invalid tenantType/tenantID/userID")
 	}
 	if p.redis == nil {
 		return fmt.Errorf("redis not enabled")
 	}
 
-	key := p.cacheKey(tenantType, userID)
+	key := p.cacheKey(tenantType, tenantID, userID)
 
 	if len(permissions) == 0 {
 		// 权限为空，删除缓存
@@ -196,15 +201,16 @@ func (p *Provider) RefreshUserPermissions(ctx context.Context, tenantType, tenan
 // ClearPermissions 清理权限缓存（供业务层主动调用）
 func (p *Provider) ClearPermissions(ctx context.Context, tenantType, tenantID, userID string) error {
 	tenantType = strings.TrimSpace(tenantType)
+	tenantID = strings.TrimSpace(tenantID)
 	userID = strings.TrimSpace(userID)
-	if tenantType == "" || userID == "" {
-		return fmt.Errorf("invalid tenantType/userID")
+	if tenantType == "" || tenantID == "" || userID == "" {
+		return fmt.Errorf("invalid tenantType/tenantID/userID")
 	}
 	if p.redis == nil {
 		return fmt.Errorf("redis not enabled")
 	}
 
-	key := p.cacheKey(tenantType, userID)
+	key := p.cacheKey(tenantType, tenantID, userID)
 	return p.redis.Delete(key)
 }
 
@@ -266,8 +272,19 @@ func (p *Provider) PermissionMiddleware(permissions string) gin.HandlerFunc {
 			return
 		}
 
+		tenantID := p.resolveTenantID(c, tenantType)
+		if tenantID == "" {
+			c.JSON(403, gin.H{
+				"success": false,
+				"message": "missing tenant context",
+				"code":    403,
+			})
+			c.Abort()
+			return
+		}
+
 		// 获取用户权限
-		perms, err := p.GetUserPermissions(c.Request.Context(), tenantType, "", userID)
+		perms, err := p.GetUserPermissions(c.Request.Context(), tenantType, tenantID, userID)
 		if err != nil {
 			c.JSON(403, gin.H{
 				"success": false,
@@ -412,7 +429,7 @@ func (p *Provider) AddRoleForUser(tenantType, tenantID, userID, roleCode string)
 
 	// 清理用户权限缓存
 	ctx := context.Background()
-	if err := p.ClearPermissions(ctx, tenantType, "", userID); err != nil {
+	if err := p.ClearPermissions(ctx, tenantType, tenantID, userID); err != nil {
 		if p.log != nil {
 			p.log.Warnw("failed to clear user permissions", "error", err)
 		}
@@ -438,7 +455,7 @@ func (p *Provider) DeleteRoleForUser(tenantType, tenantID, userID, roleCode stri
 
 	// 清理用户权限缓存
 	ctx := context.Background()
-	if err := p.ClearPermissions(ctx, tenantType, "", userID); err != nil {
+	if err := p.ClearPermissions(ctx, tenantType, tenantID, userID); err != nil {
 		if p.log != nil {
 			p.log.Warnw("failed to clear user permissions", "error", err)
 		}
@@ -501,15 +518,57 @@ func (p *Provider) GetImplicitPermissionsForUser(tenantType, tenantID, userID st
 	return permissions, nil
 }
 
-// 辅助方法：构建 key
+// buildTenantKey 构建 Casbin 使用的租户作用域键。
 func (p *Provider) buildTenantKey(tenantType, tenantID string) string {
 	return fmt.Sprintf("%s:%s", tenantType, tenantID)
 }
 
+// buildSubjectKey 构建带租户作用域的用户主体键。
 func (p *Provider) buildSubjectKey(tenantType, tenantID, userID string) string {
 	return fmt.Sprintf("%s:%s:%s", tenantType, tenantID, userID)
 }
 
+// buildRoleKey 构建带租户作用域的角色键。
 func (p *Provider) buildRoleKey(tenantType, tenantID, roleCode string) string {
 	return fmt.Sprintf("%s:%s:%s", tenantType, tenantID, roleCode)
+}
+
+// resolveTenantID 从认证上下文中解析权限作用域 tenant_id。
+func (p *Provider) resolveTenantID(c *gin.Context, tenantType string) string {
+	tenantType = strings.TrimSpace(tenantType)
+	if tenantType == "admin" {
+		return "system"
+	}
+	if c == nil {
+		return ""
+	}
+
+	data, _ := c.Get("auth.data")
+	if data == nil {
+		return ""
+	}
+
+	if m, ok := data.(map[string]interface{}); ok {
+		if tenantID := firstNonEmptyString(m["tenant_id"], m["partner_id"], m["tenantID"], m["partnerID"]); tenantID != "" {
+			return tenantID
+		}
+	}
+
+	if m, err := z.ToMap(data, "TenantID", "PartnerID"); err == nil {
+		if tenantID := firstNonEmptyString(m["TenantID"], m["PartnerID"]); tenantID != "" {
+			return tenantID
+		}
+	}
+
+	return ""
+}
+
+// firstNonEmptyString 返回首个非空字符串值。
+func firstNonEmptyString(values ...interface{}) string {
+	for _, value := range values {
+		if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
 }
