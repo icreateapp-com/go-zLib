@@ -237,20 +237,15 @@ func (b *BaseController) getQueryFromURL(c *gin.Context) db_provider.Query {
 		searchStr := searchStrs[0]
 		var conditions [][]interface{}
 		for _, part := range strings.Split(searchStr, "|") {
-			parts := strings.Split(part, ":")
-			if len(parts) >= 2 {
-				var value interface{}
-				field := parts[0]
-				value = parts[1]
-				operator := "="
-				if len(parts) > 2 {
-					operator = parts[2]
-					if strings.ToUpper(operator) == "IN" {
-						value = strings.Split(z.ToString(value), ",")
-					}
-				}
-				conditions = append(conditions, []interface{}{field, value, operator})
+			field, value, operator, ok := parseSearchCondition(part)
+			if !ok {
+				continue
 			}
+			var normalizedValue interface{} = value
+			if strings.EqualFold(operator, "in") {
+				normalizedValue = strings.Split(value, ",")
+			}
+			conditions = append(conditions, []interface{}{field, normalizedValue, operator})
 		}
 		if len(conditions) > 0 {
 			query.AddSearchGroup("AND", conditions...)
@@ -285,6 +280,50 @@ func (b *BaseController) getQueryFromURL(c *gin.Context) db_provider.Query {
 	}
 
 	return *query
+}
+
+// parseSearchCondition 解析搜索条件
+func parseSearchCondition(part string) (field string, value string, operator string, ok bool) {
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return "", "", "", false
+	}
+
+	firstColon := strings.Index(part, ":")
+	if firstColon <= 0 || firstColon >= len(part)-1 {
+		return "", "", "", false
+	}
+
+	field = strings.TrimSpace(part[:firstColon])
+	remainder := strings.TrimSpace(part[firstColon+1:])
+	if field == "" || remainder == "" {
+		return "", "", "", false
+	}
+
+	operator = "="
+	value = remainder
+
+	lastColon := strings.LastIndex(remainder, ":")
+	if lastColon > 0 && lastColon < len(remainder)-1 {
+		candidateValue := strings.TrimSpace(remainder[:lastColon])
+		candidateOperator := strings.TrimSpace(remainder[lastColon+1:])
+		if candidateValue != "" && isURLSearchOperator(candidateOperator) {
+			value = candidateValue
+			operator = candidateOperator
+		}
+	}
+
+	return field, value, operator, true
+}
+
+// isURLSearchOperator 是否属于操作符
+func isURLSearchOperator(operator string) bool {
+	switch strings.ToLower(strings.TrimSpace(operator)) {
+	case "=", "!=", "<>", ">", ">=", "<", "<=", "like", "left_like", "right_like", "not_like", "in", "not_in", "is_null", "is_not_null", "between", "not_between":
+		return true
+	default:
+		return false
+	}
 }
 
 // GetParamString 获取字符串类型的路径参数

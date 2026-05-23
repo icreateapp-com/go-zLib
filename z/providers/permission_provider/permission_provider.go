@@ -10,7 +10,6 @@ import (
 	"github.com/casbin/casbin/v2"
 	"github.com/casbin/casbin/v2/model"
 	"github.com/gin-gonic/gin"
-	"github.com/icreateapp-com/go-zLib/z"
 	"github.com/icreateapp-com/go-zLib/z/providers/config_provider"
 	"github.com/icreateapp-com/go-zLib/z/providers/logger_provider"
 	"github.com/icreateapp-com/go-zLib/z/providers/redis_provider"
@@ -29,6 +28,13 @@ type Provider struct {
 	mu       sync.RWMutex
 	callback Callback
 }
+
+const (
+	permissionTenantTypeContextKey = "permission.tenant_type"
+	permissionTenantIDContextKey   = "permission.tenant_id"
+	permissionUserIDContextKey     = "permission.user_id"
+	permissionBypassContextKey     = "permission.bypass"
+)
 
 // In Provider 的 fx 入参
 type In struct {
@@ -214,11 +220,10 @@ func (p *Provider) ClearPermissions(ctx context.Context, tenantType, tenantID, u
 	return p.redis.Delete(key)
 }
 
-// PermissionMiddleware 权限中间件
-// 权限字符串格式："resource1:action1,action2;resource2:action1,action2"
-// 分号分隔多个资源，每个资源用冒号分隔资源和动作，动作用逗号分隔
+// PermissionMiddleware 通用权限中间件。
+// 该中间件只消费显式写入 gin.Context 的权限上下文，不推断任何业务字段。
+// 权限字符串格式："resource1:action1,action2;resource2:action1,action2"。
 func (p *Provider) PermissionMiddleware(permissions string) gin.HandlerFunc {
-	// 解析权限白名单
 	whitelist := p.parsePermissions(permissions)
 
 	return func(c *gin.Context) {
@@ -236,47 +241,18 @@ func (p *Provider) PermissionMiddleware(permissions string) gin.HandlerFunc {
 			return
 		}
 
-		// 从 gin.Context 获取 auth 信息（由 auth_provider.AuthMiddleware 设置）
-		// guard 兼容两种写法："auth.guard"（新）和 "guard"（旧）
-		guardAny, _ := c.Get("auth.guard")
-		if guardAny == nil {
-			guardAny, _ = c.Get("guard")
-		}
-		userIDAny, _ := c.Get("auth.user_id")
-
-		guard, _ := guardAny.(string)
-		userID, _ := userIDAny.(string)
-
-		guard = strings.TrimSpace(guard)
-		userID = strings.TrimSpace(userID)
-
-		if guard == "" || userID == "" {
-			c.JSON(403, gin.H{
-				"success": false,
-				"message": "missing guard/user context",
-				"code":    403,
-			})
-			c.Abort()
+		if isPermissionBypassed(c) {
+			c.Next()
 			return
 		}
 
-		// tenantType 直接由 guard 推导（与 auth_provider.Authenticate 写入的 auth.guard 对齐）
-		tenantType := guard
-		if tenantType == "" {
+		tenantType := getPermissionContextString(c, permissionTenantTypeContextKey)
+		tenantID := getPermissionContextString(c, permissionTenantIDContextKey)
+		userID := getPermissionContextString(c, permissionUserIDContextKey)
+		if tenantType == "" || tenantID == "" || userID == "" {
 			c.JSON(403, gin.H{
 				"success": false,
-				"message": "missing tenant context",
-				"code":    403,
-			})
-			c.Abort()
-			return
-		}
-
-		tenantID := p.resolveTenantID(c, tenantType)
-		if tenantID == "" {
-			c.JSON(403, gin.H{
-				"success": false,
-				"message": "missing tenant context",
+				"message": "missing permission context",
 				"code":    403,
 			})
 			c.Abort()
@@ -533,42 +509,42 @@ func (p *Provider) buildRoleKey(tenantType, tenantID, roleCode string) string {
 	return fmt.Sprintf("%s:%s:%s", tenantType, tenantID, roleCode)
 }
 
-// resolveTenantID 从认证上下文中解析权限作用域 tenant_id。
-func (p *Provider) resolveTenantID(c *gin.Context, tenantType string) string {
-	tenantType = strings.TrimSpace(tenantType)
-	if tenantType == "admin" {
-		return "system"
-	}
+func getPermissionContextString(c *gin.Context, key string) string {
 	if c == nil {
 		return ""
 	}
-
-	data, _ := c.Get("auth.data")
-	if data == nil {
+	value, exists := c.Get(key)
+	if !exists {
 		return ""
 	}
-
-	if m, ok := data.(map[string]interface{}); ok {
-		if tenantID := firstNonEmptyString(m["tenant_id"], m["partner_id"], m["tenantID"], m["partnerID"]); tenantID != "" {
-			return tenantID
-		}
-	}
-
-	if m, err := z.ToMap(data, "TenantID", "PartnerID"); err == nil {
-		if tenantID := firstNonEmptyString(m["TenantID"], m["PartnerID"]); tenantID != "" {
-			return tenantID
-		}
-	}
-
-	return ""
+	s, _ := value.(string)
+	return strings.TrimSpace(s)
 }
 
-// firstNonEmptyString 返回首个非空字符串值。
-func firstNonEmptyString(values ...interface{}) string {
-	for _, value := range values {
-		if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
-		}
+func isPermissionBypassed(c *gin.Context) bool {
+	if c == nil {
+		return false
 	}
-	return ""
+	value, exists := c.Get(permissionBypassContextKey)
+	if !exists {
+		return false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true") || strings.TrimSpace(v) == "1"
+	case int:
+		return v == 1
+	case int8:
+		return v == 1
+	case int16:
+		return v == 1
+	case int32:
+		return v == 1
+	case int64:
+		return v == 1
+	default:
+		return false
+	}
 }

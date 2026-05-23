@@ -51,7 +51,7 @@ func NewDBProvider(lc fx.Lifecycle, in MiddlewaresIn, cfg *config_provider.Confi
 	}
 
 	std := zap.NewStdLog(log.Base())
-	gormLogger := logger.New(
+	gormLogger := NewFilteredGormLogger(logger.New(
 		std,
 		logger.Config{
 			SlowThreshold:             5 * time.Second,
@@ -60,7 +60,7 @@ func NewDBProvider(lc fx.Lifecycle, in MiddlewaresIn, cfg *config_provider.Confi
 			ParameterizedQueries:      true,
 			Colorful:                  true,
 		},
-	)
+	))
 
 	gdb, err := gorm.Open(dialector, &gorm.Config{Logger: gormLogger})
 	if err != nil {
