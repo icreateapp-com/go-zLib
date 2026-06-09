@@ -1,6 +1,7 @@
 package rate_limiter_provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -77,7 +78,7 @@ func NewRateLimiterProvider(in In) (*RateLimiter, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.store = store
+	p.store = &failSafeStore{underlying: store, log: p.log}
 
 	var opts []limiter.Option
 	if p.clientIPHdr != "" {
@@ -224,3 +225,74 @@ func (p *RateLimiter) BuildKey(method string, path string, clientIP string, guar
 var RateLimiterProviderModule = fx.Options(
 	fx.Provide(NewRateLimiterProvider),
 )
+
+// failSafeStore 包装 limiter.Store 实现优雅降级（Fail Open）。
+// 当底层 Store（Redis）发生超时、断开连接等错误时，记录日志并放行，防止系统因 Redis 故障而完全崩溃。
+type failSafeStore struct {
+	underlying limiter.Store
+	log        *logger_provider.Logger
+}
+
+// Get 获取指定 Key 在指定速率下的限流状态，若底层 Store 报错则进行优雅放行（Fail Open）。
+func (s *failSafeStore) Get(ctx context.Context, key string, rate limiter.Rate) (limiter.Context, error) {
+	result, err := s.underlying.Get(ctx, key, rate)
+	if err != nil {
+		if s.log != nil {
+			s.log.Warnw("rate limiter store Get failed, failing open", "key", key, "error", err)
+		}
+		return limiter.Context{
+			Limit:     rate.Limit,
+			Remaining: rate.Limit,
+			Reached:   false,
+		}, nil
+	}
+	return result, nil
+}
+
+// Peek 查看指定 Key 的限流状态（不增加计数器），若底层 Store 报错则进行优雅放行（Fail Open）。
+func (s *failSafeStore) Peek(ctx context.Context, key string, rate limiter.Rate) (limiter.Context, error) {
+	result, err := s.underlying.Peek(ctx, key, rate)
+	if err != nil {
+		if s.log != nil {
+			s.log.Warnw("rate limiter store Peek failed, failing open", "key", key, "error", err)
+		}
+		return limiter.Context{
+			Limit:     rate.Limit,
+			Remaining: rate.Limit,
+			Reached:   false,
+		}, nil
+	}
+	return result, nil
+}
+
+// Increment 递增指定 Key 的计数器并返回最新的限流状态，若底层 Store 报错则进行优雅放行（Fail Open）。
+func (s *failSafeStore) Increment(ctx context.Context, key string, n int64, rate limiter.Rate) (limiter.Context, error) {
+	result, err := s.underlying.Increment(ctx, key, n, rate)
+	if err != nil {
+		if s.log != nil {
+			s.log.Warnw("rate limiter store Increment failed, failing open", "key", key, "error", err)
+		}
+		return limiter.Context{
+			Limit:     rate.Limit,
+			Remaining: rate.Limit,
+			Reached:   false,
+		}, nil
+	}
+	return result, nil
+}
+
+// Reset 重置指定 Key 在指定限流速率下的限流状态，若底层 Store 报错则进行优雅放行（Fail Open）。
+func (s *failSafeStore) Reset(ctx context.Context, key string, rate limiter.Rate) (limiter.Context, error) {
+	result, err := s.underlying.Reset(ctx, key, rate)
+	if err != nil {
+		if s.log != nil {
+			s.log.Warnw("rate limiter store Reset failed, failing open", "key", key, "error", err)
+		}
+		return limiter.Context{
+			Limit:     rate.Limit,
+			Remaining: rate.Limit,
+			Reached:   false,
+		}, nil
+	}
+	return result, nil
+}

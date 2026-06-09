@@ -1,6 +1,7 @@
 package permission_provider
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -19,10 +20,24 @@ func NewRedisAdapter(redis *redis_provider.Redis) *RedisAdapter {
 	return &RedisAdapter{redis: redis}
 }
 
+// scanKeys 使用 SCAN 遍历匹配的键，避免依赖生产环境常被禁用的 KEYS 命令。
+func (a *RedisAdapter) scanKeys(pattern string) ([]string, error) {
+	ctx := context.Background()
+	keys := make([]string, 0, 32)
+	iter := a.redis.Client().Scan(ctx, 0, pattern, 100).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
 // LoadPolicy 从 Redis 加载策略
 func (a *RedisAdapter) LoadPolicy(model model.Model) error {
 	// 加载策略规则
-	policyKeys, err := a.redis.Keys("casbin_policy_*")
+	policyKeys, err := a.scanKeys("casbin_policy_*")
 	if err != nil {
 		return fmt.Errorf("failed to get policy keys: %w", err)
 	}
@@ -50,7 +65,7 @@ func (a *RedisAdapter) LoadPolicy(model model.Model) error {
 	}
 
 	// 加载角色规则
-	roleKeys, err := a.redis.Keys("casbin_role_*")
+	roleKeys, err := a.scanKeys("casbin_role_*")
 	if err != nil {
 		return fmt.Errorf("failed to get role keys: %w", err)
 	}
@@ -102,12 +117,12 @@ func (a *RedisAdapter) SavePolicy(model model.Model) error {
 
 // clearAllPolicies 清理所有策略
 func (a *RedisAdapter) clearAllPolicies() {
-	policyKeys, _ := a.redis.Keys("casbin_policy_*")
+	policyKeys, _ := a.scanKeys("casbin_policy_*")
 	for _, key := range policyKeys {
 		a.redis.Delete(key)
 	}
 
-	roleKeys, _ := a.redis.Keys("casbin_role_*")
+	roleKeys, _ := a.scanKeys("casbin_role_*")
 	for _, key := range roleKeys {
 		a.redis.Delete(key)
 	}
@@ -145,9 +160,9 @@ func (a *RedisAdapter) RemoveFilteredPolicy(sec string, ptype string, fieldIndex
 	var keys []string
 
 	if sec == "p" {
-		keys, _ = a.redis.Keys("casbin_policy_*")
+		keys, _ = a.scanKeys("casbin_policy_*")
 	} else if sec == "g" {
-		keys, _ = a.redis.Keys("casbin_role_*")
+		keys, _ = a.scanKeys("casbin_role_*")
 	}
 
 	for _, key := range keys {
@@ -243,9 +258,9 @@ func (a *RedisAdapter) GetFilteredPolicy(sec string, ptype string, fieldIndex in
 	var result [][]string
 
 	if sec == "p" {
-		keys, _ = a.redis.Keys("casbin_policy_*")
+		keys, _ = a.scanKeys("casbin_policy_*")
 	} else if sec == "g" {
-		keys, _ = a.redis.Keys("casbin_role_*")
+		keys, _ = a.scanKeys("casbin_role_*")
 	}
 
 	for _, key := range keys {
@@ -278,7 +293,7 @@ func (a *RedisAdapter) GetFilteredPolicy(sec string, ptype string, fieldIndex in
 // LoadFilteredPolicy 加载过滤后的策略
 func (a *RedisAdapter) LoadFilteredPolicy(model model.Model) error {
 	// 加载策略规则
-	policyKeys, err := a.redis.Keys("casbin_policy_*")
+	policyKeys, err := a.scanKeys("casbin_policy_*")
 	if err != nil {
 		return fmt.Errorf("failed to get policy keys: %w", err)
 	}
@@ -306,7 +321,7 @@ func (a *RedisAdapter) LoadFilteredPolicy(model model.Model) error {
 	}
 
 	// 加载角色规则
-	roleKeys, err := a.redis.Keys("casbin_role_*")
+	roleKeys, err := a.scanKeys("casbin_role_*")
 	if err != nil {
 		return fmt.Errorf("failed to get role keys: %w", err)
 	}
