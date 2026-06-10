@@ -86,10 +86,23 @@ func NewDBProvider(lc fx.Lifecycle, in MiddlewaresIn, cfg *config_provider.Confi
 			if err != nil {
 				return err
 			}
+			applyDBPoolConfig(sqlDB, cfg)
 			if err := sqlDB.PingContext(ctx); err != nil {
 				return err
 			}
-			log.Infow("provider[db] middlewares", "driver", driver)
+			log.Infow(
+				"provider[db] middlewares",
+				"driver",
+				driver,
+				"max_open_conns",
+				sqlDB.Stats().MaxOpenConnections,
+				"max_idle_conns",
+				cfg.GetInt("db.mysql.max_idle_conns", 10),
+				"conn_max_lifetime",
+				cfg.GetDuration("db.mysql.conn_max_lifetime", 5*time.Minute).String(),
+				"conn_max_idle_time",
+				cfg.GetDuration("db.mysql.conn_max_idle_time", 2*time.Minute).String(),
+			)
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
@@ -102,6 +115,44 @@ func NewDBProvider(lc fx.Lifecycle, in MiddlewaresIn, cfg *config_provider.Confi
 	})
 
 	return db, nil
+}
+
+// applyDBPoolConfig 配置 GORM 底层 database/sql 连接池。
+//
+// 这是 Go / GORM 官方推荐方式：通过 gorm.DB() 取得 *sql.DB 后设置连接池参数，
+// 避免长生命周期服务反复复用已被 MySQL / 代理层断开的空闲连接。
+func applyDBPoolConfig(sqlDB *sql.DB, cfg *config_provider.Config) {
+	if sqlDB == nil || cfg == nil {
+		return
+	}
+
+	maxOpenConns := cfg.GetInt("db.mysql.max_open_conns", 50)
+	if maxOpenConns <= 0 {
+		maxOpenConns = 50
+	}
+
+	maxIdleConns := cfg.GetInt("db.mysql.max_idle_conns", 10)
+	if maxIdleConns < 0 {
+		maxIdleConns = 10
+	}
+	if maxIdleConns > maxOpenConns {
+		maxIdleConns = maxOpenConns
+	}
+
+	connMaxLifetime := cfg.GetDuration("db.mysql.conn_max_lifetime", 5*time.Minute)
+	if connMaxLifetime <= 0 {
+		connMaxLifetime = 5 * time.Minute
+	}
+
+	connMaxIdleTime := cfg.GetDuration("db.mysql.conn_max_idle_time", 2*time.Minute)
+	if connMaxIdleTime <= 0 {
+		connMaxIdleTime = 2 * time.Minute
+	}
+
+	sqlDB.SetMaxOpenConns(maxOpenConns)
+	sqlDB.SetMaxIdleConns(maxIdleConns)
+	sqlDB.SetConnMaxLifetime(connMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(connMaxIdleTime)
 }
 
 // DBProviderModule 数据库模块
