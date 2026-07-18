@@ -1,6 +1,9 @@
 package auth_provider
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
 )
@@ -61,6 +64,8 @@ func AuthMiddleware(ap *Auth) gin.HandlerFunc {
 		success, _, err := ap.Authenticate(c)
 
 		if !success {
+			applyAuthFailureCORSHeaders(c)
+
 			// 处理友好的错误消息
 			var errorMsg string
 
@@ -84,6 +89,25 @@ func AuthMiddleware(ap *Auth) gin.HandlerFunc {
 
 		// 认证成功或无需认证，继续处理
 		c.Next()
+	}
+}
+
+func applyAuthFailureCORSHeaders(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	origin := strings.TrimSpace(c.GetHeader("Origin"))
+	if origin == "" {
+		return
+	}
+	headers := c.Writer.Header()
+	headers.Set("Access-Control-Allow-Origin", origin)
+	headers.Set("Access-Control-Allow-Credentials", "true")
+	headers.Set("Access-Control-Expose-Headers", "*")
+	headers.Add("Vary", "Origin")
+	if c.Request != nil && c.Request.Method == http.MethodOptions {
+		headers.Set("Access-Control-Allow-Methods", strings.TrimSpace(c.GetHeader("Access-Control-Request-Method")))
+		headers.Set("Access-Control-Allow-Headers", strings.TrimSpace(c.GetHeader("Access-Control-Request-Headers")))
 	}
 }
 

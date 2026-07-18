@@ -63,6 +63,38 @@ func corsResolveOrigin(origin string, conf corsConfig) string {
 	return ""
 }
 
+func corsResolveAllowMethods(conf corsConfig, requestMethod string) string {
+	if len(conf.allowMethods) == 0 {
+		return ""
+	}
+	if len(conf.allowMethods) == 1 && conf.allowMethods[0] == "*" {
+		if requestMethod == "" {
+			return strings.Join([]string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, ", ")
+		}
+		if conf.allowCredentials {
+			return requestMethod
+		}
+		return requestMethod
+	}
+	return strings.Join(conf.allowMethods, ", ")
+}
+
+func corsResolveAllowHeaders(conf corsConfig, requestHeaders string) string {
+	if len(conf.allowHeaders) == 0 {
+		return ""
+	}
+	if len(conf.allowHeaders) == 1 && conf.allowHeaders[0] == "*" {
+		if strings.TrimSpace(requestHeaders) == "" {
+			return "Authorization, Content-Type, X-Requested-With"
+		}
+		if conf.allowCredentials {
+			return requestHeaders
+		}
+		return requestHeaders
+	}
+	return strings.Join(conf.allowHeaders, ", ")
+}
+
 func corsMatchOrigin(allowed, origin string) bool {
 	if strings.EqualFold(allowed, origin) {
 		return true
@@ -124,8 +156,8 @@ func CorsMiddleware(cfg *config_provider.Config) gin.HandlerFunc {
 		}
 
 		if c.Request.Method == http.MethodOptions {
-			headers.Set("Access-Control-Allow-Methods", strings.Join(conf.allowMethods, ", "))
-			headers.Set("Access-Control-Allow-Headers", strings.Join(conf.allowHeaders, ", "))
+			headers.Set("Access-Control-Allow-Methods", corsResolveAllowMethods(conf, c.GetHeader("Access-Control-Request-Method")))
+			headers.Set("Access-Control-Allow-Headers", corsResolveAllowHeaders(conf, c.GetHeader("Access-Control-Request-Headers")))
 			if conf.maxAge > 0 {
 				headers.Set("Access-Control-Max-Age", strconv.Itoa(conf.maxAge))
 			}
