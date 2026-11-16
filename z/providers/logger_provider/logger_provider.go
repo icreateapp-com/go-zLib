@@ -2,7 +2,7 @@ package logger_provider
 
 import (
 	"context"
-	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +19,17 @@ import (
 type Logger struct {
 	base *zap.Logger
 	log  *zap.SugaredLogger
+}
+
+// noSyncWriteSyncer keeps console writes serialized by zapcore.Lock while
+// avoiding fsync on stdout. Container runtimes commonly expose stdout as a
+// pipe, where fsync returns EINVAL even though all log writes succeeded.
+type noSyncWriteSyncer struct {
+	io.Writer
+}
+
+func (noSyncWriteSyncer) Sync() error {
+	return nil
 }
 
 // Base 返回底层 zap.Logger。
@@ -107,17 +118,29 @@ func NewLoggerProvider(lc fx.Lifecycle, cfg *config_provider.Config) (*Logger, e
 	consoleEncoder := zapcore.NewConsoleEncoder(encCfg)
 	fileEncoder := zapcore.NewJSONEncoder(encCfg)
 
-	pattern := filepath.Join(logDir, "%Y%m%d.log")
-	fileWriter, err := rotatelogs.New(
-		pattern,
-		rotatelogs.WithRotationTime(24*time.Hour),
-		rotatelogs.WithMaxAge(time.Duration(maxAge)*24*time.Hour),
-	)
-	if err != nil {
-		return nil, err
+	var output io.Writer
+	var closer io.Closer
+	maxFile := cfg.GetInt("logger.max_file_size_mb", 0)
+	maxTotal := cfg.GetInt("logger.max_total_size_mb", 0)
+	if maxFile > 0 || maxTotal > 0 {
+		bounded, err := newBoundedFileWriter(logDir, int64(maxFile)*1024*1024, int64(maxTotal)*1024*1024, maxAge)
+		if err != nil {
+			return nil, err
+		}
+		output, closer = bounded, bounded
+	} else {
+		fileWriter, err := rotatelogs.New(filepath.Join(logDir, "%Y%m%d.log"), rotatelogs.WithRotationTime(24*time.Hour), rotatelogs.WithMaxAge(time.Duration(maxAge)*24*time.Hour))
+		if err != nil {
+			return nil, err
+		}
+		output, closer = fileWriter, fileWriter
 	}
-	fileWS := zapcore.AddSync(fileWriter)
-	consoleWS := zapcore.AddSync(zapcore.Lock(os.Stdout))
+	fileWS := zapcore.AddSync(output)
+	var console io.Writer = os.Stdout
+	if maxFile > 0 && maxTotal > 0 {
+		console = recordLimitWriter{Writer: os.Stdout}
+	}
+	consoleWS := zapcore.Lock(noSyncWriteSyncer{Writer: console})
 
 	core := zapcore.NewTee(
 		zapcore.NewCore(consoleEncoder, consoleWS, lvl),
@@ -140,16 +163,8 @@ func NewLoggerProvider(lc fx.Lifecycle, cfg *config_provider.Config) (*Logger, e
 	lc.Append(fx.Hook{
 		OnStop: func(ctx context.Context) error {
 			err := base.Sync()
-			if err == nil {
-				return nil
-			}
-			// zap 在某些环境下（例如输出被重定向/非 tty）对 stdout/stderr Sync 可能返回该错误。
-			// 参考 zap 官方建议：忽略 stdout/stderr 的 sync 错误。
-			if errors.Is(err, os.ErrInvalid) {
-				return nil
-			}
-			if strings.Contains(err.Error(), "inappropriate ioctl") || strings.Contains(err.Error(), "bad file descriptor") {
-				return nil
+			if closeErr := closer.Close(); closeErr != nil {
+				return closeErr
 			}
 			return err
 		},

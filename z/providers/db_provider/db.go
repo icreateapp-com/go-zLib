@@ -11,7 +11,6 @@ import (
 	"github.com/icreateapp-com/go-zLib/z/providers/db_provider/db_middlewares"
 	"github.com/icreateapp-com/go-zLib/z/providers/logger_provider"
 	"go.uber.org/fx"
-	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -45,22 +44,12 @@ func NewDBProvider(lc fx.Lifecycle, in MiddlewaresIn, cfg *config_provider.Confi
 		return nil, fmt.Errorf("unknown db type: %s", driver)
 	}
 
-	debugLevel := logger.Error
+	debugLevel := logger.Warn
 	if cfg.GetBool("app.debug", true) {
 		debugLevel = logger.Info
 	}
 
-	std := zap.NewStdLog(log.Base())
-	gormLogger := NewFilteredGormLogger(logger.New(
-		std,
-		logger.Config{
-			SlowThreshold:             5 * time.Second,
-			LogLevel:                  debugLevel,
-			IgnoreRecordNotFoundError: true,
-			ParameterizedQueries:      true,
-			Colorful:                  true,
-		},
-	))
+	gormLogger := NewFilteredGormLogger(newGormLogger(log.Base(), debugLevel))
 
 	gdb, err := gorm.Open(dialector, &gorm.Config{Logger: gormLogger})
 	if err != nil {

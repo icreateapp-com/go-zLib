@@ -53,3 +53,13 @@ func (l *FilteredGormLogger) Trace(
 	}
 	l.inner.Trace(ctx, begin, fc, err)
 }
+
+// ParamsFilter forwards GORM's optional parameter-redaction contract.
+func (l *FilteredGormLogger) ParamsFilter(ctx context.Context, sql string, args ...interface{}) (string, []interface{}) {
+	if filter, ok := l.inner.(interface {
+		ParamsFilter(context.Context, string, ...interface{}) (string, []interface{})
+	}); ok {
+		return filter.ParamsFilter(ctx, sql, args...)
+	}
+	return sql, args
+}
